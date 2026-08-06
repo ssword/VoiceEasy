@@ -199,6 +199,150 @@ describe('Ticket 01 — Backend API: Engine param + voice list + /engines contra
   })
 })
 
+describe('Ticket 05 — generateJson per-segment engine override', () => {
+  let server: http.Server
+
+  beforeAll((done) => {
+    server = createTestServer()
+    server.listen(0, () => done())
+  })
+
+  afterAll((done) => {
+    server.closeAllConnections?.()
+    server.close(() => done())
+  })
+
+  /** Helper: fetch streaming endpoint for generateJson. */
+  async function fetchJsonStream(body: unknown): Promise<Response> {
+    const addr = server.address() as AddressInfo
+    return fetch(`http://127.0.0.1:${addr.port}/api/v1/tts/generateJson`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it(
+    'POST /generateJson returns streaming audio with default engine per segment',
+    async () => {
+      const res = await fetchJsonStream({
+        data: [
+          { text: 'Hello world, this is segment one.', voice: 'en-US-AriaNeural' },
+          { text: 'This is segment two with a different voice.', voice: 'en-US-JennyNeural' },
+        ],
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type') || '').toContain('application/octet-stream')
+      expect(res.headers.get('x-generate-tts-type')).toBe('stream')
+    },
+    TTS_TIMEOUT
+  )
+
+  it(
+    'POST /generateJson with explicit per-segment engine override',
+    async () => {
+      const res = await fetchJsonStream({
+        data: [
+          {
+            text: 'Hello world, this uses edge tts explicitly.',
+            voice: 'en-US-AriaNeural',
+            engine: 'edge-tts',
+          },
+          {
+            text: 'This also uses edge tts.',
+            voice: 'en-US-JennyNeural',
+            engine: 'edge-tts',
+          },
+        ],
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type') || '').toContain('application/octet-stream')
+      expect(res.headers.get('x-generate-tts-type')).toBe('stream')
+    },
+    TTS_TIMEOUT
+  )
+
+  it(
+    'POST /generateJson with mixed engines (EdgeTTS + CosyVoice)',
+    async () => {
+      const hasCosyVoice = await isEngineRegistered(server, 'cosyvoice-tts')
+      if (!hasCosyVoice) {
+        console.log('Skipping mixed engine generateJson test: REGISTER_COSYVOICE not set')
+        return
+      }
+      const addr = server.address() as AddressInfo
+      const res = await fetch(`http://127.0.0.1:${addr.port}/api/v1/tts/generateJson`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: [
+            {
+              text: 'Hello world, this is the narrator speaking in English.',
+              voice: 'en-US-AriaNeural',
+              engine: 'edge-tts',
+            },
+            {
+              text: '你好世界，我是女主角龙小春在说中文。',
+              voice: 'longxiaochun',
+              engine: 'cosyvoice-tts',
+            },
+          ],
+        }),
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type') || '').toContain('application/octet-stream')
+      expect(res.headers.get('x-generate-tts-type')).toBe('stream')
+    },
+    TTS_TIMEOUT
+  )
+
+  it(
+    'POST /generateJson falls back to default engine when segment has no engine field',
+    async () => {
+      const res = await fetchJsonStream({
+        data: [
+          {
+            text: 'This segment specifies engine.',
+            voice: 'en-US-AriaNeural',
+            engine: 'edge-tts',
+          },
+          {
+            text: 'This segment has no engine, should default to edge-tts.',
+            voice: 'en-US-JennyNeural',
+          },
+        ],
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type') || '').toContain('application/octet-stream')
+    },
+    TTS_TIMEOUT
+  )
+
+  it('POST /generateJson rejects invalid engine in a segment', async () => {
+    const { status, data } = await fetchFromServer(server, '/api/v1/tts/generateJson', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data: [
+          { text: 'Hello world.', voice: 'en-US-AriaNeural', engine: 'nonexistent-tts' },
+        ],
+      }),
+    })
+    expect(status).toBe(400)
+    expect(data.success).toBe(false)
+  })
+
+  it('POST /generateJson rejects empty data array', async () => {
+    const { status, data } = await fetchFromServer(server, '/api/v1/tts/generateJson', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: [] }),
+    })
+    expect(status).toBe(400)
+    expect(data.success).toBe(false)
+  })
+})
+
 describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManager', () => {
   let server: http.Server
 
