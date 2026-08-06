@@ -69,6 +69,21 @@
           <!-- 预设语音选择 -->
           <div v-if="audioConfig.voiceMode === 'preset'" class="voice-selector">
             <el-form label-position="top" size="default">
+              <el-form-item label="引擎">
+                <el-select
+                  v-model="audioConfig.engine"
+                  placeholder="选择引擎"
+                  @change="handleEngineChange"
+                >
+                  <el-option
+                    v-for="eng in engines"
+                    :key="eng.name"
+                    :label="eng.name"
+                    :value="eng.name"
+                  />
+                </el-select>
+              </el-form-item>
+
               <el-form-item label="语言">
                 <el-select
                   v-model="audioConfig.selectedLanguage"
@@ -97,7 +112,12 @@
               </el-form-item>
 
               <el-form-item label="语音">
-                <el-select v-model="audioConfig.selectedVoice" placeholder="选择语音" filterable>
+                <el-select
+                  v-model="audioConfig.selectedVoice"
+                  placeholder="选择语音"
+                  filterable
+                  :loading="voiceListLoading"
+                >
                   <el-option
                     v-for="voice in filteredVoices"
                     :key="voice.Name"
@@ -255,7 +275,9 @@ import StreamButton from '@/components/StreamButton.vue'
 import {
   generateTTS,
   getVoiceList,
+  getEngines,
   type Voice,
+  type EngineInfo,
   type GenerateResponse,
   createTaskStream,
 } from '@/api/tts'
@@ -275,6 +297,8 @@ const audioPlayer = ref<HTMLAudioElement>()
 const confettiElement = ref<HTMLElement | null>(null)
 
 const voiceList = ref<Voice[]>(defaultVoiceList)
+const engines = ref<EngineInfo[]>([])
+const voiceListLoading = ref(false)
 const audioPlayerRef = ref<InstanceType<typeof StreamButton> | null>(null)
 const processor = ref<ReturnType<typeof createAudioStreamProcessor> | null>(null)
 
@@ -491,10 +515,11 @@ const filterVoices = () => {
 }
 
 const buildParams = (text: string) => {
-  const { selectedVoice, rate, pitch, volume, openaiBaseUrl, openaiKey, openaiModel, voiceMode } =
+  const { selectedVoice, rate, pitch, volume, openaiBaseUrl, openaiKey, openaiModel, voiceMode, engine } =
     audioConfig
   const params: any = {
     text: text.trim(),
+    engine,
   }
 
   if (voiceMode === 'preset') {
@@ -699,11 +724,50 @@ onBeforeMount(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
+const fetchVoices = async (engineName: string) => {
+  voiceListLoading.value = true
+  try {
+    const response = await getVoiceList(engineName)
+    const rawVoices = response?.data!
+    // Normalize: engines like CosyVoice return string[], EdgeTTS returns Voice[]
+    voiceList.value = rawVoices.map((v: any) =>
+      typeof v === 'string' ? { Name: v, Gender: 'All', ContentCategories: [], VoicePersonalities: [] } : v
+    )
+  } catch (error) {
+    console.error('Failed to fetch voice list:', error)
+    voiceList.value = defaultVoiceList
+  } finally {
+    voiceListLoading.value = false
+  }
+}
+
+const handleEngineChange = async (engineName: string) => {
+  await fetchVoices(engineName)
+  // Auto-select first voice if current voice doesn't exist in the new engine's list
+  const exists = voiceList.value.some((v) => v.Name === audioConfig.selectedVoice)
+  if (!exists && voiceList.value.length > 0) {
+    updateConfig('selectedVoice', voiceList.value[0].Name)
+  }
+  // Update supportsSubtitles based on engine info
+  const engineInfo = engines.value.find((e) => e.name === engineName)
+  updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
+}
+
 onMounted(async () => {
   successAudio.value = new Audio(Notification)
   try {
-    const response = await getVoiceList()
-    voiceList.value = response?.data!
+    const engResponse = await getEngines()
+    engines.value = engResponse?.data!
+    // Load voices for the current/default engine
+    await fetchVoices(audioConfig.engine)
+    // Ensure selected voice exists in the list
+    const exists = voiceList.value.some((v) => v.Name === audioConfig.selectedVoice)
+    if (!exists && voiceList.value.length > 0) {
+      updateConfig('selectedVoice', voiceList.value[0].Name)
+    }
+    // Set initial supportsSubtitles
+    const engineInfo = engines.value.find((e) => e.name === audioConfig.engine)
+    updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
   } catch (error) {
     handle429(error)
   }

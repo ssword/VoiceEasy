@@ -9,6 +9,13 @@ const api = axios.create({
   timeout: 60000,
 })
 
+export interface EngineInfo {
+  name: string
+  languages: string[]
+  voices: string[]
+  supportsSubtitles: boolean
+}
+
 export interface GenerateRequest {
   text: string
   voice?: string
@@ -18,6 +25,7 @@ export interface GenerateRequest {
   openaiBaseUrl?: string
   openaiKey?: string
   openaiModel?: string
+  engine?: string
 }
 export interface TaskRequest {
   id: string
@@ -61,10 +69,19 @@ export interface Task {
   updatedAt?: Date
   updateProgress?: (taskId: string, progress: number) => Task | undefined
 }
-export const getVoiceList = async () => {
-  const response = await api.get<ResponseWrapper<Voice[]>>('/voiceList')
+export const getEngines = async () => {
+  const response = await api.get<ResponseWrapper<EngineInfo[]>>('/engines')
   if (response.data?.code !== 200 || !response.data?.success) {
-    throw new Error(response.data?.message || '生成语音失败')
+    throw new Error(response.data?.message || '获取引擎列表失败')
+  }
+  return response.data
+}
+
+export const getVoiceList = async (engine?: string) => {
+  const params = engine ? { engine } : undefined
+  const response = await api.get<ResponseWrapper<Voice[]>>('/voiceList', { params })
+  if (response.data?.code !== 200 || !response.data?.success) {
+    throw new Error(response.data?.message || '获取语音列表失败')
   }
   return response.data
 }

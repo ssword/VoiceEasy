@@ -57,7 +57,7 @@
             {{ item.isDownloading ? '下载中' : '下载' }}
           </el-button>
           <el-button
-            v-if="item.srt"
+            v-if="item.srt && configStore.audioConfig.supportsSubtitles"
             type="primary"
             size="small"
             round
@@ -94,6 +94,7 @@
 <script setup lang="ts">
 import { downloadFile } from '@/api/tts'
 import { useGenerationStore } from '@/stores/generation'
+import { useAudioConfigStore } from '@/stores/audioConfig'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { watch } from 'vue'
 import {
@@ -110,6 +111,7 @@ import { useAudio } from '@/utils/index'
 import type { Audio } from '../stores/generation'
 
 const store = useGenerationStore()
+const configStore = useAudioConfigStore()
 
 const playAudio = async (item: Audio, _: number) => {
   const audio = useAudio(item.audio)

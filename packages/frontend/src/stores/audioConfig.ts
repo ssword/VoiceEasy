@@ -10,6 +10,8 @@ export interface AudioConfig {
   selectedLanguage: string;
   selectedGender: string;
   selectedVoice: string;
+  engine: string;
+  supportsSubtitles: boolean;
   previewText: string;
   openaiBaseUrl: string;
   openaiKey: string;
@@ -28,6 +30,8 @@ const defaultConfig: AudioConfig = {
   selectedLanguage: 'zh-CN',
   selectedGender: 'All',
   selectedVoice: 'zh-CN-YunxiNeural',
+  engine: 'edge-tts',
+  supportsSubtitles: true,
   previewText: '这是一段测试文本，用于试听语音效果。',
   openaiBaseUrl: '',
   openaiKey: '',
