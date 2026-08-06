@@ -5,6 +5,8 @@ import { AUDIO_DIR, STATIC_DOMAIN, EDGE_API_LIMIT } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
 import { ensureDir, generateId, getLangConfig, readJson } from '../utils'
+import { ttsPluginManager } from '../tts/pluginManager'
+import { DEFAULT_ENGINE } from '../config'
 import { openai } from '../utils/openai'
 import { splitText } from './text.service'
 import { generateSingleVoice, generateSrt } from './edge-tts.service'
@@ -86,6 +88,17 @@ async function generateWithLLM(
 ): Promise<TTSResult> {
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
+
+  // Resolve engine-specific voice list for non-default engines
+  let effectiveVoiceList = voiceList
+  if (engine && engine !== DEFAULT_ENGINE) {
+    const engineInstance = ttsPluginManager.getEngine(engine)
+    if (engineInstance?.getVoiceOptions) {
+      const engineVoices = await engineInstance.getVoiceOptions()
+      effectiveVoiceList = engineVoices.map((name) => ({ Name: name } as VoiceConfig))
+    }
+  }
+
   const formatLlmSegments = (llmSegments: any) =>
     llmSegments
       .filter((segment: any) => segment.text)
@@ -95,7 +108,7 @@ async function generateWithLLM(
         engine,
       }))
   if (length <= 1) {
-    const prompt = getPrompt(lang, voiceList, segments[0])
+    const prompt = getPrompt(lang, effectiveVoiceList, segments[0], engine)
     // logger.debug(`Prompt for LLM: ${prompt}`)
     const llmResponse = await fetchLLMSegment(prompt)
     let llmSegments = llmResponse?.result || llmResponse?.segments || []
@@ -117,7 +130,7 @@ async function generateWithLLM(
     }
     for (let seg of segments) {
       count++
-      const prompt = getPrompt(lang, voiceList, seg)
+      const prompt = getPrompt(lang, effectiveVoiceList, seg, engine)
       // logger.debug(`Prompt for LLM: ${prompt}`)
       const llmResponse = await fetchLLMSegment(prompt)
       let llmSegments = llmResponse?.result || llmResponse?.segments || []

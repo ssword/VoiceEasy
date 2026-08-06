@@ -13,6 +13,8 @@ import {
   readJson,
   streamToResponse,
 } from '../utils'
+import { ttsPluginManager } from '../tts/pluginManager'
+import { DEFAULT_ENGINE } from '../config'
 import { openai } from '../utils/openai'
 import { splitText } from './text.service'
 import { generateSingleVoiceStream, generateSrt } from './edge-tts.service'
@@ -43,9 +45,20 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   const segment: Segment = { id: generateId(useLLM ? 'aigen-' : voice, text), text }
   const { lang, voiceList } = await getLangConfig(segment.text)
   logger.debug(`Language detected lang: `, lang)
+
+  // Resolve engine-specific voice list for non-default engines
+  let effectiveVoiceList = voiceList
+  if (engine && engine !== DEFAULT_ENGINE) {
+    const engineInstance = ttsPluginManager.getEngine(engine)
+    if (engineInstance?.getVoiceOptions) {
+      const engineVoices = await engineInstance.getVoiceOptions()
+      effectiveVoiceList = engineVoices.map((name) => ({ Name: name } as VoiceConfig))
+    }
+  }
+
   task!.context!.segment = segment
   task!.context!.lang = lang
-  task!.context!.voiceList = voiceList
+  task!.context!.voiceList = effectiveVoiceList
   task!.context!.engine = engine
   const { res } = task.context as Required<NonNullable<Task['context']>>
   if (!validateLangAndVoice(lang, voice, res)) {
@@ -103,7 +116,7 @@ async function generateWithLLMStream(task: Task) {
         engine,
       }))
   if (length <= 1) {
-    const prompt = getPrompt(lang, voiceList, segments[0])
+    const prompt = getPrompt(lang, voiceList, segments[0], engine)
     logger.debug(`Prompt for LLM: ${prompt}`)
     const llmResponse = await fetchLLMSegment(prompt)
     let llmSegments = llmResponse?.result || llmResponse?.segments || []
@@ -127,7 +140,7 @@ async function generateWithLLMStream(task: Task) {
 
     for (let seg of segments) {
       count++
-      const prompt = getPrompt(lang, voiceList, seg)
+      const prompt = getPrompt(lang, voiceList, seg, engine)
       logger.debug(`Prompt for LLM: ${prompt}`)
       const llmResponse = await fetchLLMSegment(prompt)
       let llmSegments = llmResponse?.result || llmResponse?.segments || []

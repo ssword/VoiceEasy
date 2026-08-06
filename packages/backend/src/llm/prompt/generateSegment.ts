@@ -68,17 +68,24 @@ ${JSON.stringify(voiceList, null, 2)}
 ### Content to be processed
 ${text}
 `
-export function getPrompt(lang = 'cn', voiceList: VoiceConfig[], text: string) {
+export function getPrompt(
+  lang = 'cn',
+  voiceList: VoiceConfig[],
+  text: string,
+  engine?: string
+) {
+  // For non-default engines, voices don't have language prefixes — use all voices.
+  const isDefaultEngine = !engine || engine === 'edge-tts'
   switch (lang) {
     case 'zh':
     case 'cn':
       return cnTemplate(
-        voiceList.filter((voice) => voice.Name.startsWith('zh')),
+        isDefaultEngine ? voiceList.filter((voice) => voice.Name.startsWith('zh')) : voiceList,
         text
       )
     case 'eng':
       return engTemplate(
-        voiceList.filter((voice) => voice.Name.startsWith('en')),
+        isDefaultEngine ? voiceList.filter((voice) => voice.Name.startsWith('en')) : voiceList,
         text
       )
     default:
