@@ -212,14 +212,19 @@ describe('Ticket 05 — generateJson per-segment engine override', () => {
     server.close(() => done())
   })
 
-  /** Helper: fetch streaming endpoint for generateJson. */
+  /** Helper: fetch streaming endpoint for generateJson, drain body after header check. */
   async function fetchJsonStream(body: unknown): Promise<Response> {
     const addr = server.address() as AddressInfo
-    return fetch(`http://127.0.0.1:${addr.port}/api/v1/tts/generateJson`, {
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/v1/tts/generateJson`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
+    // Drain the body in the background so the connection can close and the test doesn't hang.
+    res.body?.pipeTo(
+      new WritableStream({ write() { /* drain */ } })
+    ).catch(() => { /* ignore drain errors */ })
+    return res
   }
 
   it(

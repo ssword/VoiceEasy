@@ -159,20 +159,119 @@ curl -X POST http://localhost:3000/api/v1/tts/generateJson \
 #### 参数说明
 
 - text: 你需要转语音的文字。
-- voice: 你需要用到的声音，参考：[支持的声音列表](./packages/backend/src/llm/prompt/voiceList.json)
+- voice: 你需要用到的声音。EdgeTTS 声音参考：[支持的声音列表](./packages/backend/src/llm/prompt/voiceList.json)，CosyVoice 声音参考上方声音列表。
+- engine: 使用的 TTS 引擎（可选，默认 `"edge-tts"`），可选值：`"edge-tts"` / `"cosyvoice-tts"`。
 - rate: 语速调整，百分比形式，默认 +0%（正常），如 "+50%"（加快 50%），"-20%"（减慢 20%）。
 - volume: 音量调整，百分比形式，默认 +0%（正常），如 "+20%"（增 20%），"-10%"（减 10%）。
 - pitch: 音调调整，默认 +0Hz（正常），如 "+10Hz"（提高 10 赫兹），"-5Hz"（降低 5 赫兹）。
 
-### 接入其他 TTS 服务
+### CosyVoice (Qwen-Audio-TTS) 引擎
 
-- TODO
+CosyVoice 是阿里云百炼的 Qwen-Audio-TTS 语音合成引擎，支持流式和非流式生成，中文效果更自然。
+
+#### 1. 获取凭证
+
+前往 [阿里云百炼](https://bailian.console.aliyun.com/) 开通 CosyVoice 服务，获取：
+- **API Key**：在右上角头像 → API Key 管理中创建
+- **Workspace ID**：在百炼控制台左上角可以找到
+
+#### 2. 配置环境变量
+
+```bash
+# .env 或 packages/backend/.env
+REGISTER_COSYVOICE=true
+DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxx
+DASHSCOPE_WORKSPACE_ID=ws-xxxxxxxxxxxxxxxx
+# 可选：模型选择，默认 cosyvoice-v3-flash
+COSYVOICE_MODEL=cosyvoice-v3-flash
+```
+
+#### 3. Docker 部署配置
+
+```bash
+docker run -d -p 3000:3000 \
+  -e REGISTER_COSYVOICE=true \
+  -e DASHSCOPE_API_KEY=sk-xxx \
+  -e DASHSCOPE_WORKSPACE_ID=ws-xxx \
+  -v $(pwd)/audio:/app/audio \
+  cosincox/easyvoice:latest
+```
+
+#### 4. 使用 CosyVoice 生成语音
+
+```bash
+# 非流式生成
+curl -X POST http://localhost:3000/api/v1/tts/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "你好，欢迎使用EasyVoice语音合成服务。",
+    "voice": "longxiaochun",
+    "engine": "cosyvoice-tts"
+  }'
+
+# 流式生成
+curl -X POST http://localhost:3000/api/v1/tts/createStream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "这是一段较长的中文文本，用于测试CosyVoice的流式语音合成效果。",
+    "voice": "longxiaochun",
+    "engine": "cosyvoice-tts"
+  }' \
+  -o output.mp3
+
+# 多角色混合引擎（CosyVoice + EdgeTTS）
+curl -X POST http://localhost:3000/api/v1/tts/generateJson \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": [
+      {
+        "text": "Hello, I am the narrator.",
+        "voice": "en-US-AriaNeural",
+        "engine": "edge-tts"
+      },
+      {
+        "text": "你好，我是女主角龙小春。",
+        "voice": "longxiaochun",
+        "engine": "cosyvoice-tts"
+      }
+    ]
+  }' \
+  -o output.mp3
+```
+
+#### 5. 支持的声音列表
+
+| 声音名称 | 描述 |
+|---------|------|
+| `longxiaochun` | 龙小春 — 温和女声 |
+| `longyu` | 龙宇 — 沉稳男声 |
+| `longchen` | 龙辰 — 阳光男声 |
+| `longyue` | 龙悦 — 甜美女声 |
+| `longzhe` | 龙哲 — 磁性男声 |
+| `longfei` | 龙飞 — 活泼男声 |
+| `longbai` | 龙白 — 清冷男声 |
+| `longshu` | 龙舒 — 温柔女声 |
+| `longjing` | 龙静 — 文静女声 |
+| `longyi` | 龙翼 — 成熟男声 |
+
+> **注意**：CosyVoice 目前不支持字幕（SRT）生成，`supportsSubtitles: false`。
+
+#### 6. 其他引擎
+
+项目还支持以下引擎，通过环境变量启用：
+
+| 引擎 | 环境变量 | 说明 |
+|------|---------|------|
+| OpenAI TTS | `REGISTER_OPENAI_TTS=true` | 需要配置 `OPENAI_API_KEY` |
+| Kokoro TTS | `REGISTER_KOKORO=true` | 需要配置 `TTS_KOKORO_URL` |
+
+更多引擎接入方式参考 `packages/backend/src/tts/engines/` 目录下的实现。
 
 ## 技术实现 🛠️
 
 - **前端**：Vue 3 + TypeScript + Element Plus 🌐  
 - **后端**：Node.js + Express + TypeScript ⚡  
-- **语音合成**：Microsoft Azure TTS(更多引擎接入中) + OpenAI(OpenAI 兼容即可) + ffmpeg 🎤  
+- **语音合成**：Microsoft EdgeTTS + 阿里云 CosyVoice (Qwen-Audio-TTS) + OpenAI TTS + Kokoro + ffmpeg 🎤  
 - **部署**：Node.js + Docker + Docker Compose 🐳  
 
 ## 快速开发 🚀
@@ -230,6 +329,6 @@ pnpm dev
 
 ## Tips
 
-- 当前主要通过 Edge-TTS API 提供免费语音合成。  
+- 当前通过 EdgeTTS API 和 CosyVoice 等多引擎提供免费/付费语音合成。
 
-- 未来计划支持官方 API、Google TTS、声音克隆等功能。
+- 通过 TtsPluginManager 插件系统接入更多引擎，未来计划支持 Google TTS、声音克隆等功能。
