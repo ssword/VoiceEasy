@@ -20,5 +20,6 @@ export interface TTSEngine {
   synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> // 合成语音，返回音频 Buffer 或者 Readable
   getSupportedLanguages(): Promise<string[]> // 支持的语言列表
   getVoiceOptions?(): Promise<string[]> // 可选：支持的音色列表
+  supportsSubtitles?: boolean // 是否支持字幕生成，默认 true
   initialize?(): Promise<void> // 可选：初始化方法
 }

@@ -28,13 +28,12 @@ export async function readJson<T>(path: string): Promise<T> {
 }
 export async function ensureDir(path: string) {
   try {
-    await fs.access(path)
-    console.log(`dir exists: ${path}`)
+    await fs.mkdir(path, { recursive: true })
+    console.log(`ensure dir: ${path}`)
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      await fs.mkdir(path, { recursive: true })
-      console.log(`create dir succed: ${path}`)
-    } else {
+    // Ignore EEXIST — directory already exists (race condition)
+    const code = (error as any)?.code
+    if (code !== 'EEXIST') {
       throw error
     }
   }

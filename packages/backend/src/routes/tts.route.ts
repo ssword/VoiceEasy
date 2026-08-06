@@ -14,13 +14,21 @@ import { validateJson } from '../schema/generate'
 
 const router = Router()
 
-router.get('/engines', (req, res) => {
-  const engines = ttsPluginManager.getAllEngines().map((engine) => ({
-    name: engine.name,
-    languages: engine.getSupportedLanguages(),
-    voices: engine.getVoiceOptions?.() || [],
-  }))
-  res.json(engines)
+router.get('/engines', async (req, res, next) => {
+  try {
+    const allEngines = ttsPluginManager.getAllEngines()
+    const engines = await Promise.all(
+      allEngines.map(async (engine) => ({
+        name: engine.name,
+        languages: await engine.getSupportedLanguages(),
+        voices: engine.getVoiceOptions ? await engine.getVoiceOptions() : [],
+        supportsSubtitles: engine.supportsSubtitles !== false,
+      }))
+    )
+    res.json({ code: 200, data: engines, success: true })
+  } catch (err) {
+    next(err)
+  }
 })
 
 router.get('/voiceList', getVoiceList)

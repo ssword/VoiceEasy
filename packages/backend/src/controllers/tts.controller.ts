@@ -3,10 +3,11 @@ import { generateTTS } from '../services/tts.service'
 import { logger } from '../utils/logger'
 import path from 'path'
 import fs from 'fs/promises'
-import { ALLOWED_EXTENSIONS, AUDIO_DIR } from '../config'
+import { ALLOWED_EXTENSIONS, AUDIO_DIR, DEFAULT_ENGINE } from '../config'
 import { EdgeSchema } from '../schema/generate'
 import taskManager from '../utils/taskManager'
-function formatBody({ text, pitch, voice, volume, rate, useLLM }: EdgeSchema) {
+import { ttsPluginManager } from '../tts/pluginManager'
+function formatBody({ text, pitch, voice, volume, rate, useLLM, engine }: EdgeSchema) {
   const positivePercent = (value: string | undefined) => {
     if (value === '0%' || value === '0' || value === undefined) return '+0%'
     return value
@@ -22,6 +23,7 @@ function formatBody({ text, pitch, voice, volume, rate, useLLM }: EdgeSchema) {
     rate: positivePercent(rate),
     volume: positivePercent(volume),
     useLLM,
+    engine,
   }
 }
 export async function createTask(req: Request, res: Response, next: NextFunction) {
@@ -160,13 +162,35 @@ export async function downloadAudio(req: Request, res: Response): Promise<void> 
 
 export async function getVoiceList(req: Request, res: Response, next: NextFunction) {
   try {
-    logger.debug('Fetching voice list...')
-    const voices = require('../llm/prompt/voice.json')
-    res.json({
-      code: 200,
-      data: voices,
-      success: true,
-    })
+    const engineName = (req.query.engine as string) || DEFAULT_ENGINE
+    logger.debug(`Fetching voice list for engine: ${engineName}`)
+
+    const engine = ttsPluginManager.getEngine(engineName)
+    if (!engine) {
+      res.status(400).json({
+        code: 400,
+        message: `Unsupported TTS engine: ${engineName}`,
+        success: false,
+      })
+      return
+    }
+
+    if (engine.getVoiceOptions) {
+      const voiceNames = await engine.getVoiceOptions()
+      res.json({
+        code: 200,
+        data: voiceNames,
+        success: true,
+      })
+    } else {
+      // Fallback to EdgeTTS voice.json for backward compatibility
+      const voices = require('../llm/prompt/voice.json')
+      res.json({
+        code: 200,
+        data: voices,
+        success: true,
+      })
+    }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)
     logger.error(`getVoiceList Error: ${errorMessage}`)

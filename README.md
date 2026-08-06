@@ -208,6 +208,11 @@ pnpm dev
 | `RATE_LIMIT_WINDOW`| `1`                           | 速率限制窗口大小（分钟）         |
 | `RATE_LIMIT`       | `10`                          | 速率限制次数                   |
 | `EDGE_API_LIMIT`   | `3`                           | Edge-TTS API 并发数           |
+| `REGISTER_OPENAI_TTS` | `false`                    | 启用 OpenAI TTS 引擎          |
+| `REGISTER_COSYVOICE`  | `false`                    | 启用 CosyVoice (Qwen-Audio-TTS) 引擎 |
+| `DASHSCOPE_API_KEY`   | -                           | 阿里云百炼 API Key            |
+| `DASHSCOPE_WORKSPACE_ID` | -                        | 阿里云百炼 Workspace ID       |
+| `COSYVOICE_MODEL`  | `cosyvoice-v3-flash`         | CosyVoice 模型名称            |
 
 - **配置文件**：可在 `.env` 或 `packages/backend/.env` 中设置，优先级为 `packages/backend/.env > .env`。  
 - **Docker 配置**：通过 `-e` 参数传入环境变量，如上文示例。

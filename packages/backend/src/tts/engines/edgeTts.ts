@@ -20,11 +20,17 @@ export class EdgeTtsEngine implements TTSEngine {
     } = options
     let finaleType = outputType ? outputType : stream ? 'stream' : 'buffer'
     const lang = /([a-zA-Z]{2,5}-[a-zA-Z]{2,5}\b)/.exec(voice)?.[1]
+    // Convert pitch/rate/volume to strings expected by EdgeTTS.
+    // They may come as numbers (from TtsOptions) or strings (from service layer).
+    const toPitchStr = (v: unknown) => (v != null ? String(v) : undefined)
     const tts = new EdgeTTS({
       voice,
       lang,
       outputFormat: 'audio-24khz-96kbitrate-mono-mp3',
       saveSubtitles,
+      pitch: toPitchStr(pitch),
+      rate: toPitchStr(rate),
+      volume: toPitchStr(volume),
       timeout: 30_000,
     })
     console.log(`run with nodejs edge-tts service...`)

@@ -1,58 +1,73 @@
 import fs from 'fs/promises'
-import { EdgeSchema } from '../schema/generate'
-import { EdgeTTS } from '../lib/node-edge-tts/edge-tts-fixed'
 import { fileExist, readJson, safeRunWithRetry } from '../utils'
+import { ttsPluginManager } from '../tts/pluginManager'
+import { DEFAULT_ENGINE } from '../config'
 
-export async function runEdgeTTS({
-  text,
-  pitch,
-  volume,
-  voice,
-  rate,
-  output,
-  outputType = 'file',
-}: Omit<EdgeSchema, 'useLLM'> & { output: string; outputType?: string }) {
-  const lang = /([a-zA-Z]{2,5}-[a-zA-Z]{2,5}\b)/.exec(voice)?.[1]
-  const tts = new EdgeTTS({
-    voice,
-    lang,
-    outputFormat: 'audio-24khz-96kbitrate-mono-mp3',
-    saveSubtitles: true,
-    pitch,
-    rate,
-    volume,
-    timeout: 30_000,
-  })
-  console.log(`run with nodejs edge-tts service...`)
-  if (outputType === 'file') {
-    await tts.ttsPromise(text, { audioPath: output, outputType })
-    return {
-      audio: output,
-      srt: output.replace('.mp3', '.srt'),
-      file: '',
-    }
-  }
-  return tts.ttsPromise(text, { audioPath: output, outputType: outputType as any })
-}
-export const generateSingleVoice = async (
-  params: Omit<EdgeSchema, 'useLLM'> & { output: string }
-) => {
+export const generateSingleVoice = async (params: {
+  text: string
+  pitch?: string
+  voice: string
+  rate?: string
+  volume?: string
+  output: string
+  engine?: string
+}) => {
+  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE } = params
   let result: TTSResult = {
     audio: '',
     srt: '',
   }
   await safeRunWithRetry(
     async () => {
-      result = (await runEdgeTTS({ ...params })) as TTSResult
+      const engineInstance = ttsPluginManager.getEngine(engine)
+      if (!engineInstance) {
+        throw new Error(`TTS engine not found: ${engine}`)
+      }
+      const buffer = (await engineInstance.synthesize(text, {
+        voice,
+        pitch: pitch != null ? pitch : undefined,
+        rate: rate != null ? rate : undefined,
+        volume: volume != null ? volume : undefined,
+        stream: false,
+        outputType: 'buffer',
+        saveSubtitles: engineInstance.supportsSubtitles !== false,
+        output,
+      } as any)) as Buffer
+      await fs.writeFile(output, buffer)
+      result = {
+        audio: output,
+        srt: output.replace('.mp3', '.srt'),
+      }
     },
     { retries: 5 }
   )
   return result!
 }
-export const generateSingleVoiceStream = async (
-  params: Omit<EdgeSchema, 'useLLM'> & { output: string; outputType?: string }
-) => {
-  return runEdgeTTS({ ...params, outputType: 'stream' })
+export const generateSingleVoiceStream = async (params: {
+  text: string
+  pitch?: string
+  voice: string
+  rate?: string
+  volume?: string
+  output: string
+  outputType?: string
+  engine?: string
+}) => {
+  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE } = params
+  const engineInstance = ttsPluginManager.getEngine(engine)
+  if (!engineInstance) {
+    throw new Error(`TTS engine not found: ${engine}`)
+  }
+  return engineInstance.synthesize(text, {
+    voice,
+    pitch: pitch != null ? pitch : undefined,
+    rate: rate != null ? rate : undefined,
+    volume: volume != null ? volume : undefined,
+    stream: true,
+    outputType: 'stream',
+    saveSubtitles: engineInstance.supportsSubtitles !== false,
+    output,
+  } as any)
 }
 
 // 定义字幕数据的类型

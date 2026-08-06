@@ -39,13 +39,14 @@ enum ErrorMessages {
  * 流式生成文本转语音 (TTS) 的音频和字幕
  */
 export async function generateTTSStream(params: Required<EdgeSchema>, task: Task) {
-  const { text, pitch, voice, rate, volume, useLLM } = params
+  const { text, pitch, voice, rate, volume, useLLM, engine } = params
   const segment: Segment = { id: generateId(useLLM ? 'aigen-' : voice, text), text }
   const { lang, voiceList } = await getLangConfig(segment.text)
   logger.debug(`Language detected lang: `, lang)
   task!.context!.segment = segment
   task!.context!.lang = lang
   task!.context!.voiceList = voiceList
+  task!.context!.engine = engine
   const { res } = task.context as Required<NonNullable<Task['context']>>
   if (!validateLangAndVoice(lang, voice, res)) {
     task?.endTask?.(task.id)
@@ -73,7 +74,7 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   if (useLLM) {
     generateWithLLMStream(task)
   } else {
-    generateWithoutLLMStream({ ...params, output: segment.id }, task)
+    generateWithoutLLMStream({ ...params, output: segment.id, engine }, task)
   }
 }
 export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[], task: Task) {
@@ -90,7 +91,7 @@ export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[]
  * 使用 LLM 生成 TTS
  */
 async function generateWithLLMStream(task: Task) {
-  const { segment, voiceList, lang, res } = task.context as Required<NonNullable<Task['context']>>
+  const { segment, voiceList, lang, res, engine } = task.context as Required<NonNullable<Task['context']>>
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
   const formatLlmSegments = (llmSegments: any) =>
@@ -99,6 +100,7 @@ async function generateWithLLMStream(task: Task) {
       .map((segment: any) => ({
         ...segment,
         voice: segment.name,
+        engine,
       }))
   if (length <= 1) {
     const prompt = getPrompt(lang, voiceList, segments[0])

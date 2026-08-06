@@ -30,7 +30,7 @@ export enum ErrorMessages {
  * 生成文本转语音 (TTS) 的音频和字幕
  */
 export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Promise<TTSResult> {
-  const { text, pitch, voice, rate, volume, useLLM } = params
+  const { text, pitch, voice, rate, volume, useLLM, engine } = params
   // 检查缓存
   const cacheKey = taskManager.generateTaskId({ text, pitch, voice, rate, volume })
   const cache = await audioCacheInstance.getAudio(cacheKey)
@@ -46,7 +46,7 @@ export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Pr
 
   let result: TTSResult
   if (useLLM) {
-    result = await generateWithLLM(segment, voiceList, lang, task)
+    result = await generateWithLLM(segment, voiceList, lang, engine, task)
   } else {
     result = await generateWithoutLLM(
       segment,
@@ -57,6 +57,7 @@ export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Pr
         rate,
         volume,
         output: segment.id,
+        engine,
       },
       task
     )
@@ -80,6 +81,7 @@ async function generateWithLLM(
   segment: Segment,
   voiceList: VoiceConfig[],
   lang: string,
+  engine: string,
   task?: Task
 ): Promise<TTSResult> {
   const { text, id } = segment
@@ -90,6 +92,7 @@ async function generateWithLLM(
       .map((segment: any) => ({
         ...segment,
         voice: segment.name,
+        engine,
       }))
   if (length <= 1) {
     const prompt = getPrompt(lang, voiceList, segments[0])
@@ -125,7 +128,8 @@ async function generateWithLLM(
       }
       const result = await buildSegmentList(
         { ...segment, id: `[segments:${count}]${segment.id}` },
-        formatLlmSegments(llmSegments)
+        formatLlmSegments(llmSegments),
+        task
       )
       task?.updateProgress?.(task.id, getProgress())
       finalSegments.push(result)
@@ -188,7 +192,7 @@ async function buildSegment(
   dir: string = ''
 ): Promise<TTSResult> {
   const { id, text } = segment
-  const { pitch, voice, rate, volume } = params
+  const { pitch, voice, rate, volume, engine } = params
   const output = path.resolve(AUDIO_DIR, dir, id)
   const result = await generateSingleVoice({
     text,
@@ -197,6 +201,7 @@ async function buildSegment(
     rate,
     volume,
     output,
+    engine,
   })
   logger.info('Generated single segment:', result)
   setTimeout(() => {
@@ -235,7 +240,7 @@ async function buildSegmentList(
     return Number((((handledLength / length) * 100) / (id.includes('segment') ? 2 : 1)).toFixed(2))
   }
   const tasks = segments.map((segment, index) => async () => {
-    const { text, pitch, voice, rate, volume } = segment
+    const { text, pitch, voice, rate, volume, engine } = segment
     const output = path.resolve(tmpDirPath, `${index + 1}_splits.mp3`)
     const cacheKey = taskManager.generateTaskId({ text, pitch, voice, rate, volume })
     const cache = await audioCacheInstance.getAudio(cacheKey)
@@ -244,7 +249,7 @@ async function buildSegmentList(
       fileList.push(cache.audio)
       return cache
     }
-    const result = await generateSingleVoice({ text, pitch, voice, rate, volume, output })
+    const result = await generateSingleVoice({ text, pitch, voice, rate, volume, output, engine })
     logger.debug(`Cache miss and generate audio: ${result.audio}, ${result.srt}`)
     fileList.push(result.audio)
     handledLength++

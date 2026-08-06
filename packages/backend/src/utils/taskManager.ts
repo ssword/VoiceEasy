@@ -31,6 +31,7 @@ export interface Task {
     segment?: Segment
     lang?: string
     voiceList?: VoiceConfig[]
+    engine?: string
   }
 }
 class TaskManager {

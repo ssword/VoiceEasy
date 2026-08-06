@@ -1,8 +1,9 @@
-import { config, DIRECT_GEN_LIMIT, LIMIT_TEXT_LENGTH, LIMIT_TEXT_LENGTH_ERROR_MESSAGE } from './../config/index'
+import { config, DIRECT_GEN_LIMIT, LIMIT_TEXT_LENGTH, LIMIT_TEXT_LENGTH_ERROR_MESSAGE, DEFAULT_ENGINE } from './../config/index'
 import { NextFunction, Response, Request } from 'express'
 import { z } from 'zod'
 import { logger } from '../utils/logger'
 import { openai } from '../utils/openai'
+import { ttsPluginManager } from '../tts/pluginManager'
 
 export const edgeSchema = z.object({
   text: z.string().trim().min(5, { message: '文本最少 5 字符！' }),
@@ -11,6 +12,13 @@ export const edgeSchema = z.object({
   volume: z.string().optional(),
   rate: z.string().optional(),
   useLLM: z.boolean().default(false),
+  engine: z
+    .string()
+    .optional()
+    .default(DEFAULT_ENGINE)
+    .refine((engine) => !!ttsPluginManager.getEngine(engine), {
+      message: 'Unsupported TTS engine',
+    }),
 })
 
 export const llmSchema = z.object({
@@ -36,6 +44,13 @@ const dataItemSchema = z.object({
   rate: z.string().default(''),
   pitch: z.string().default(''),
   volume: z.string().default(''),
+  engine: z
+    .string()
+    .optional()
+    .default(DEFAULT_ENGINE)
+    .refine((engine) => !!ttsPluginManager.getEngine(engine), {
+      message: 'Unsupported TTS engine',
+    }),
 })
 
 const jsonSchema = z.object({

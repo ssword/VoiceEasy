@@ -16,7 +16,9 @@ interface TTSParams {
   rate: string
   pitch: string
   output: string
+  engine?: string
 }
 type BuildSegment = TTSParams & {
   text: string
+  engine?: string
 }

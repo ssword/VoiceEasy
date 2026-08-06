@@ -5,7 +5,7 @@ import taskManager from '../utils/taskManager'
 import { EdgeSchema } from '../schema/generate'
 import { generateTTSStream, generateTTSStreamJson } from '../services/tts.stream.service'
 import { generateId, streamWithLimit } from '../utils'
-function formatBody({ text, pitch, voice, volume, rate, useLLM }: EdgeSchema) {
+function formatBody({ text, pitch, voice, volume, rate, useLLM, engine }: EdgeSchema) {
   const positivePercent = (value: string | undefined) => {
     if (value === '0%' || value === '0' || value === undefined || value === '') return '+0%'
     return value
@@ -21,6 +21,7 @@ function formatBody({ text, pitch, voice, volume, rate, useLLM }: EdgeSchema) {
     rate: positivePercent(rate),
     volume: positivePercent(volume),
     useLLM,
+    engine,
   }
 }
 /**

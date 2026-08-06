@@ -34,8 +34,15 @@ export const REGISTER_OPENAI_TTS = process.env.REGISTER_OPENAI_TTS || false
 export const REGISTER_KOKORO = process.env.REGISTER_KOKORO || false
 export const TTS_KOKORO_URL = process.env.TTS_KOKORO_URL || 'http://localhost:8880/v1'
 
+export const REGISTER_COSYVOICE = process.env.REGISTER_COSYVOICE === 'true' || false
+export const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || ''
+export const DASHSCOPE_WORKSPACE_ID = process.env.DASHSCOPE_WORKSPACE_ID || ''
+export const COSYVOICE_MODEL = process.env.COSYVOICE_MODEL || 'cosyvoice-v3-flash'
+
 export const LIMIT_TEXT_LENGTH = parseInt(process.env.LIMIT_TEXT_LENGTH || '0')
 export const LIMIT_TEXT_LENGTH_ERROR_MESSAGE = process.env.LIMIT_TEXT_LENGTH_ERROR_MESSAGE
 export const USE_HELMET = process.env.USE_HELMET === 'true' || false
 export const USE_LIMIT = process.env.USE_LIMIT === 'true' || false
 export const DIRECT_GEN_LIMIT = process.env.DIRECT_GEN_LIMIT || 200
+
+export const DEFAULT_ENGINE = 'edge-tts'
