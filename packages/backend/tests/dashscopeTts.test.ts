@@ -131,6 +131,26 @@ describe('Qwen-Audio-TTS Engine Plugin protocol', () => {
     await expect(readAll(audio as Readable)).resolves.toEqual(mp3)
   })
 
+  it('ignores an empty audio lifecycle event before decoded audio arrives', async () => {
+    const mp3 = Buffer.from('ID3-after-lifecycle-event')
+    jest.mocked(fetcher.post).mockResolvedValue({
+      data: sse(
+        JSON.stringify({
+          output: {
+            type: 'sentence_start',
+            audio: { data: '', id: 'fixture-audio-id', expires_at: 0 },
+          },
+        }),
+        JSON.stringify({ output: { audio: { data: mp3.toString('base64') } } }),
+        '[DONE]'
+      ),
+    } as any)
+
+    const audio = await qwen().synthesize('hello', { stream: true })
+
+    await expect(readAll(audio as Readable)).resolves.toEqual(mp3)
+  })
+
   it.each([
     [
       'business error',

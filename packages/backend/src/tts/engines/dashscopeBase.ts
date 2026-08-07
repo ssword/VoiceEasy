@@ -161,7 +161,7 @@ export async function collectAudio(stream: Readable, engineName: string): Promis
 }
 
 export function decodeBase64(value: unknown, field: string): Buffer | undefined {
-  if (value === undefined || value === null) return undefined
+  if (value === undefined || value === null || value === '') return undefined
   if (typeof value !== 'string' || !isBase64(value)) {
     throw new DashScopeUpstreamError(`invalid base64 audio in ${field}`)
   }

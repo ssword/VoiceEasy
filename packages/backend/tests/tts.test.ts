@@ -4,6 +4,7 @@ import { createApp } from '../src/app'
 import { AUDIO_DIR, PUBLIC_DIR } from '../src/config'
 import { Readable } from 'stream'
 import { TTSEngine, TtsOptions } from '../src/tts/types'
+import audioCacheInstance from '../src/services/audioCache.service'
 
 // Mock franc (ESM) — Jest cannot parse its import statements in CJS mode.
 // Dynamic import('franc') in getLangConfig will resolve to this mock.
@@ -11,6 +12,42 @@ jest.mock('franc', () => ({
   franc: jest.fn((text: string) => {
     // Simple heuristic: detect Chinese characters
     return /[\u4e00-\u9fff]/.test(text) ? 'cmn' : 'eng'
+  }),
+}))
+
+jest.mock('../src/utils/openai', () => ({
+  openai: {
+    config: jest.fn(),
+    createChatCompletion: jest.fn(async () => ({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              segments: [{ text: '这是由 LLM 推荐的语音片段。', name: 'longanlingxin' }],
+            }),
+          },
+        },
+      ],
+    })),
+  },
+}))
+
+jest.mock('fluent-ffmpeg', () => ({
+  __esModule: true,
+  default: jest.fn(() => {
+    const callbacks: Record<string, () => void> = {}
+    const command: Record<string, jest.Mock> = {}
+    command.input = jest.fn(() => command)
+    command.inputFormat = jest.fn(() => command)
+    command.inputOption = jest.fn(() => command)
+    command.audioCodec = jest.fn(() => command)
+    command.output = jest.fn(() => command)
+    command.on = jest.fn((event: string, callback: () => void) => {
+      callbacks[event] = callback
+      return command
+    })
+    command.run = jest.fn(() => callbacks.end?.())
+    return command
   }),
 }))
 
@@ -394,6 +431,13 @@ describe('Ticket 05 — generateJson per-segment engine override', () => {
 describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManager', () => {
   let server: http.Server
 
+  beforeEach(() => {
+    jest.spyOn(audioCacheInstance, 'getAudio').mockResolvedValue(null)
+    jest.spyOn(audioCacheInstance, 'setAudio').mockResolvedValue(true)
+  })
+
+  afterEach(() => jest.restoreAllMocks())
+
   beforeAll((done) => {
     server = createTestServer(false)
     server.listen(0, () => done())
@@ -404,6 +448,29 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
   })
 
   describe('POST /api/v1/tts/generate (non-streaming)', () => {
+    it(
+      'accepts LLM Recommendation without a preset voice',
+      async () => {
+        const { status, data } = await fetchFromServer(server, '/api/v1/tts/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: '这是一段没有预设语音、由 LLM 自动推荐语音的测试文本。',
+            engine: 'qwen-audio-tts',
+            useLLM: true,
+            openaiBaseUrl: 'https://example.test/v1',
+            openaiKey: 'fixture-key',
+            openaiModel: 'fixture-model',
+          }),
+        })
+
+        expect(status).toBe(200)
+        expect(data.success).toBe(true)
+        expect(data.data.audio).toBeDefined()
+      },
+      TTS_TIMEOUT
+    )
+
     it(
       'returns audio URL with default engine (backward compat)',
       async () => {
@@ -475,6 +542,33 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
   })
 
   describe('POST /api/v1/tts/createStream (streaming)', () => {
+    it(
+      'accepts LLM Recommendation without a preset voice',
+      async () => {
+        const res = await fetch(
+          `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1/tts/createStream`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: '这是一段没有预设语音、由 LLM 自动推荐语音的流式测试文本。',
+              engine: 'qwen-audio-tts',
+              useLLM: true,
+              openaiBaseUrl: 'https://example.test/v1',
+              openaiKey: 'fixture-key',
+              openaiModel: 'fixture-model',
+            }),
+          }
+        )
+
+        expect(res.status).toBe(200)
+        expect(res.headers.get('content-type') || '').toContain('application/octet-stream')
+        expect(res.headers.get('x-generate-tts-type')).toBe('stream')
+        await res.arrayBuffer()
+      },
+      TTS_TIMEOUT
+    )
+
     it(
       'returns streaming MP3 with default engine (backward compat)',
       async () => {

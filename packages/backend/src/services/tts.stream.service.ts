@@ -55,7 +55,7 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   task!.context!.voiceList = effectiveVoiceList
   task!.context!.engine = engine
   const { res } = task.context as Required<NonNullable<Task['context']>>
-  if (!validateLangAndVoice(lang, voice, res)) {
+  if (!useLLM && !validateLangAndVoice(lang, voice, res)) {
     taskManager.failTask(
       task.id,
       { message: ErrorMessages.ENG_MODEL_INVALID_TEXT, code: 400 },

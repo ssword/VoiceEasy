@@ -55,7 +55,7 @@ export async function generateTTS(
   const segment: Segment = { id: generateId(`${useLLM ? 'aigen-' : voice}`, text), text }
   const { lang, voiceList } = await getLangConfig(segment.text)
   logger.debug(`Language detected lang: `, lang)
-  validateLangAndVoice(lang, voice)
+  if (!useLLM) validateLangAndVoice(lang, voice)
 
   let result: TTSResult
   if (useLLM) {
