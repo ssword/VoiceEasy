@@ -115,27 +115,35 @@ async function generateWithLLMStream(task: Task) {
   const enableInterruptions = task.fields.enableInterruptions === true
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
-  const formatLlmSegments = (llmSegments: any, normalize = true) =>
-    (normalize
-      ? normalizeRecommendationSegments(llmSegments, enableInterruptions)
-      : llmSegments
-    )
+  const toBuildSegments = (llmSegments: any[]) =>
+    llmSegments
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
         ...segment,
         voice: segment.name,
         engine,
       }))
-  if (length <= 1) {
-    const prompt = getPrompt(lang, voiceList, segments[0], engine, enableInterruptions)
+  const recommendBuildSegments = async (textSegment: string): Promise<BuildSegment[]> => {
+    const prompt = getPrompt(lang, voiceList, textSegment, engine, enableInterruptions)
     const llmResponse = await fetchLLMSegment(prompt)
-    let llmSegments = llmResponse?.result || llmResponse?.segments || []
+    const llmSegments = llmResponse?.result || llmResponse?.segments || []
     if (!Array.isArray(llmSegments)) {
       throw new Error(
         'LLM response is not an array, please switch to Edge TTS mode or use another model'
       )
     }
-    const formattedSegments = formatLlmSegments(llmSegments)
+    return toBuildSegments(llmSegments)
+  }
+  const recommendNormalizedBuildSegments = async (
+    textSegment: string
+  ): Promise<BuildSegment[]> =>
+    normalizeRecommendationSegments(
+      await recommendBuildSegments(textSegment),
+      enableInterruptions
+    ) as unknown as BuildSegment[]
+
+  if (length <= 1) {
+    const formattedSegments = await recommendNormalizedBuildSegments(segments[0])
     if (task.context?.diagnostics) {
       task.context.diagnostics.segmentCount = formattedSegments.length
     }
@@ -155,20 +163,12 @@ async function generateWithLLMStream(task: Task) {
       const recommendedSegments: any[] = []
       for (const textSegment of segments) {
         count++
-        const prompt = getPrompt(lang, voiceList, textSegment, engine, true)
-        const llmResponse = await fetchLLMSegment(prompt)
-        const llmSegments = llmResponse?.result || llmResponse?.segments || []
-        if (!Array.isArray(llmSegments)) {
-          throw new Error(
-            'LLM response is not an array, please switch to Edge TTS mode or use another model'
-          )
-        }
-        const llmFormatted = formatLlmSegments(llmSegments, false)
+        const llmFormatted = await recommendBuildSegments(textSegment)
         recommendedSegments.push(...llmFormatted)
         if (task.context?.diagnostics) {
           task.context.diagnostics.segmentCount += llmFormatted.length
         }
-        logger.info('Streaming LLM Recommendation segmented content', {
+        logger.info('Buffered LLM Recommendation segmented content', {
           engine,
           batch: count,
           batchCount: segments.length,
@@ -186,15 +186,7 @@ async function generateWithLLMStream(task: Task) {
     async function* generatedAudio(): AsyncGenerator<GeneratedStreamBuildSegmentAudio> {
       for (const textSegment of segments) {
         count++
-        const prompt = getPrompt(lang, voiceList, textSegment, engine, false)
-        const llmResponse = await fetchLLMSegment(prompt)
-        const llmSegments = llmResponse?.result || llmResponse?.segments || []
-        if (!Array.isArray(llmSegments)) {
-          throw new Error(
-            'LLM response is not an array, please switch to Edge TTS mode or use another model'
-          )
-        }
-        const llmFormatted = formatLlmSegments(llmSegments)
+        const llmFormatted = await recommendNormalizedBuildSegments(textSegment)
         if (task.context?.diagnostics) {
           task.context.diagnostics.segmentCount += llmFormatted.length
         }

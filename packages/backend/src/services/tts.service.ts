@@ -136,6 +136,14 @@ async function generateWithLLM(
         voice: segment.name,
         engine,
       }))
+  const formatRawLlmSegments = (llmSegments: any[]) =>
+    llmSegments
+      .filter((segment: any) => segment.text)
+      .map((segment: any) => ({
+        ...segment,
+        voice: segment.name,
+        engine,
+      }))
   if (length <= 1) {
     const prompt = getPrompt(lang, effectiveVoiceList, segments[0], engine, enableInterruptions)
     // logger.debug(`Prompt for LLM: ${prompt}`)
@@ -159,6 +167,7 @@ async function generateWithLLM(
   } else {
     logger.info('Splitting text into multiple segments:', segments.length)
     let finalSegments = []
+    let globalBuildSegments: BuildSegment[] = []
     let count = 0
     const getProgress = () => {
       return Number(((count / segments.length) * 100).toFixed(2))
@@ -174,7 +183,9 @@ async function generateWithLLM(
           'LLM response is not an array, please switch to Edge TTS mode or use another model'
         )
       }
-      const formattedSegments = formatLlmSegments(llmSegments)
+      const formattedSegments = enableInterruptions
+        ? formatRawLlmSegments(llmSegments)
+        : formatLlmSegments(llmSegments)
       diagnostics.segmentCount += formattedSegments.length
       logger.info('LLM Recommendation segmented content', {
         engine,
@@ -182,14 +193,26 @@ async function generateWithLLM(
         batchCount: segments.length,
         segmentCount: formattedSegments.length,
       })
-      const result = await buildSegmentList(
-        { ...segment, id: `[segments:${count}]${segment.id}` },
-        formattedSegments,
+      if (enableInterruptions) {
+        globalBuildSegments.push(...formattedSegments)
+      } else {
+        const result = await buildSegmentList(
+          { ...segment, id: `[segments:${count}]${segment.id}` },
+          formattedSegments,
+          diagnostics,
+          task
+        )
+        task?.updateProgress?.(task.id, getProgress())
+        finalSegments.push(result)
+      }
+    }
+    if (enableInterruptions) {
+      return buildSegmentList(
+        segment,
+        normalizeRecommendationSegments(globalBuildSegments, true) as unknown as BuildSegment[],
         diagnostics,
         task
       )
-      task?.updateProgress?.(task.id, getProgress())
-      finalSegments.push(result)
     }
     return await buildFinal(finalSegments, id, engine)
   }

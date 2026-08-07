@@ -322,6 +322,11 @@ const voiceListLoading = ref(false)
 const audioPlayerRef = ref<InstanceType<typeof StreamButton> | null>(null)
 const processor = ref<ReturnType<typeof createAudioStreamProcessor> | null>(null)
 
+const finishGeneration = () => {
+  generating.value = false
+  generationStore.updatePhase('idle')
+}
+
 const languages = ref([
   { code: 'zh-CN', name: '中文（简体）' },
   { code: 'zh-TW', name: '中文（繁体）' },
@@ -339,9 +344,8 @@ const handleClose = (realClose: () => void) => {
       type: 'warning',
     }).then(() => {
       realClose()
-      generating.value = false
+      finishGeneration()
       generationStore.updateProgress(0)
-      generationStore.updatePhase('idle')
       processor.value!.stop()
       showStreamButton.value = false
     })
@@ -579,8 +583,7 @@ const updateAudioList = (data: GenerateResponse) => {
   generationStore.updateAudioList(newAudioList)
   ElMessage.success('语音生成成功！')
   playSuccessSound()
-  generating.value = false
-  generationStore.updatePhase('idle')
+  finishGeneration()
 
   const rect = confettiElement.value?.getBoundingClientRect()
   if (rect) {
@@ -612,8 +615,7 @@ const generateAudio = async () => {
   } catch (error) {
     console.error('生成失败:', error)
     commonErrorHandler(error)
-    generating.value = false
-    generationStore.updatePhase('idle')
+    finishGeneration()
   }
 }
 
@@ -657,8 +659,7 @@ const generateAudioTask = async () => {
     const onFinished = (newAudioUrl: string, blobs: Blob[]) => {
       audioPlayerRef.value!.audioRef!.src = newAudioUrl
       const name = `${params.voice}-${params.text.slice(0, 10)}-${Date.now()}`
-      generating.value = false
-      generationStore.updatePhase('idle')
+      finishGeneration()
       const result = {
         audio: audioPlayerRef.value!.audioRef!.src,
         file: name,
@@ -678,8 +679,7 @@ const generateAudioTask = async () => {
     }
     const onError = (msg: string) => {
       console.error(msg)
-      generating.value = false
-      generationStore.updatePhase('idle')
+      finishGeneration()
     }
     processor.value = createAudioStreamProcessor(
       stream as unknown as ReadableStream,
@@ -694,8 +694,7 @@ const generateAudioTask = async () => {
   } catch (error) {
     console.error('生成失败:', error)
     commonErrorHandler(error)
-    generating.value = false
-    generationStore.updatePhase('idle')
+    finishGeneration()
   }
 }
 const beforeUnloadHandler = async (event: BeforeUnloadEvent) => {

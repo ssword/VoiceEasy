@@ -7,6 +7,7 @@ import { Readable } from 'stream'
 import { createApp } from '../src/app'
 import { AUDIO_DIR, PUBLIC_DIR } from '../src/config'
 import { normalizeTtsRequest } from '../src/services/ttsRequest'
+import * as textService from '../src/services/text.service'
 import { TTSEngine, TtsOptions } from '../src/tts/types'
 import taskManager from '../src/utils/taskManager'
 import { createStereoToneMp3, probeAudioDuration, probeStereoRms } from './helpers/audio'
@@ -438,6 +439,12 @@ describe('Issue #2 HTTP audio assembly regression', () => {
   })
 
   it('matches /generate duration and overlap behavior for the same Build Segment timeline', async () => {
+    const realSplitText = textService.splitText
+    const splitText = jest.spyOn(textService, 'splitText').mockImplementation((text, targetLength) =>
+      text.includes('Consistent interrupted timeline')
+        ? { length: 2, segments: ['FIRST_BATCH first.', 'SECOND_BATCH second.'] }
+        : realSplitText(text, targetLength)
+    )
     const request = {
       text: `Consistent interrupted timeline ${process.pid} ${Date.now()}.`,
       voice: 'en-US-AriaNeural',
@@ -447,34 +454,38 @@ describe('Issue #2 HTTP audio assembly regression', () => {
       openaiKey: 'fixture-key',
       openaiModel: 'fixture-model',
     }
-    const streamResponse = await fetch(`${baseUrl}/api/v1/tts/createStream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    })
-    const streamFile = path.join(probeDir, 'consistent-create-stream.mp3')
-    await fs.writeFile(streamFile, Buffer.from(await streamResponse.arrayBuffer()))
+    try {
+      const streamResponse = await fetch(`${baseUrl}/api/v1/tts/createStream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      const streamFile = path.join(probeDir, 'consistent-create-stream.mp3')
+      await fs.writeFile(streamFile, Buffer.from(await streamResponse.arrayBuffer()))
 
-    const generateResponse = await fetch(`${baseUrl}/api/v1/tts/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    })
-    const generateBody = await generateResponse.json()
-    const generatedAudio = await fetch(`${baseUrl}/${generateBody.data.file}`)
-    const generateFile = path.join(probeDir, 'consistent-generate.mp3')
-    await fs.writeFile(generateFile, Buffer.from(await generatedAudio.arrayBuffer()))
+      const generateResponse = await fetch(`${baseUrl}/api/v1/tts/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      const generateBody = await generateResponse.json()
+      const generatedAudio = await fetch(`${baseUrl}/${generateBody.data.file}`)
+      const generateFile = path.join(probeDir, 'consistent-generate.mp3')
+      await fs.writeFile(generateFile, Buffer.from(await generatedAudio.arrayBuffer()))
 
-    const [streamDuration, generateDuration] = await Promise.all([
-      probeAudioDuration(streamFile),
-      probeAudioDuration(generateFile),
-    ])
-    expect(Math.abs(streamDuration - generateDuration)).toBeLessThan(0.05)
-    const [streamOverlap, generateOverlap] = await Promise.all([
-      probeStereoRms(streamFile, fixtureDuration - 0.3, 0.15),
-      probeStereoRms(generateFile, fixtureDuration - 0.3, 0.15),
-    ])
-    expect(streamOverlap.left).toBeCloseTo(generateOverlap.left, 2)
-    expect(streamOverlap.right).toBeCloseTo(generateOverlap.right, 2)
+      const [streamDuration, generateDuration] = await Promise.all([
+        probeAudioDuration(streamFile),
+        probeAudioDuration(generateFile),
+      ])
+      expect(Math.abs(streamDuration - generateDuration)).toBeLessThan(0.05)
+      const [streamOverlap, generateOverlap] = await Promise.all([
+        probeStereoRms(streamFile, fixtureDuration - 0.1, 0.1),
+        probeStereoRms(generateFile, fixtureDuration - 0.1, 0.1),
+      ])
+      expect(streamOverlap.left).toBeCloseTo(generateOverlap.left, 2)
+      expect(streamOverlap.right).toBeCloseTo(generateOverlap.right, 2)
+    } finally {
+      splitText.mockRestore()
+    }
   })
 })
