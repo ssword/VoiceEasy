@@ -40,16 +40,19 @@ function createTestServer(edgeSupportsSubtitles = true) {
     }
 
     async getVoiceOptions() {
-      return this.name === 'edge-tts'
-        ? ['en-US-AriaNeural', 'en-US-JennyNeural']
-        : [{ Name: 'longxiaochun', Gender: 'Female', language: 'zh-CN' }]
+      if (this.name === 'edge-tts') return ['en-US-AriaNeural', 'en-US-JennyNeural']
+      if (this.name === 'qwen-audio-tts') {
+        return [{ Name: 'longanlingxin', Gender: 'Female', language: 'zh-CN' }]
+      }
+      return [{ Name: 'longxiaochun', Gender: 'Female', language: 'zh-CN' }]
     }
   }
 
-  const engines: TTSEngine[] = [new FakeEngine('edge-tts', edgeSupportsSubtitles)]
-  if (process.env.REGISTER_COSYVOICE === 'true') {
-    engines.push(new FakeEngine('cosyvoice-tts', false))
-  }
+  const engines: TTSEngine[] = [
+    new FakeEngine('edge-tts', edgeSupportsSubtitles),
+    new FakeEngine('cosyvoice-tts', false),
+    new FakeEngine('qwen-audio-tts', false),
+  ]
   const app = createApp({
     isDev: true,
     rateLimit: RATE_LIMIT,
@@ -131,19 +134,15 @@ describe('Ticket 01 — Backend API: Engine param + voice list + /engines contra
       expect(edgeTts.voices.length).toBeGreaterThan(0)
     })
 
-    it('returns CosyVoice when REGISTER_COSYVOICE=true', async () => {
+    it('returns deterministic CosyVoice and Qwen Engine Plugin contracts', async () => {
       const { status, data } = await fetchFromServer(server, '/api/v1/tts/engines')
       expect(status).toBe(200)
       const cosyVoice = data.data.find((e: any) => e.name === 'cosyvoice-tts')
-      // This test checks engine presence based on env config
-      if (process.env.REGISTER_COSYVOICE === 'true') {
-        expect(cosyVoice).toBeDefined()
-        expect(cosyVoice.supportsSubtitles).toBe(false)
-        expect(cosyVoice.voices.length).toBeGreaterThan(0)
-      } else {
-        // When not configured, CosyVoice should not be registered
-        expect(cosyVoice).toBeUndefined()
-      }
+      const qwen = data.data.find((e: any) => e.name === 'qwen-audio-tts')
+      expect(cosyVoice).toEqual(expect.objectContaining({ supportsSubtitles: false }))
+      expect(cosyVoice.voices).toContainEqual(expect.objectContaining({ Name: 'longxiaochun' }))
+      expect(qwen).toEqual(expect.objectContaining({ supportsSubtitles: false }))
+      expect(qwen.voices).toContainEqual(expect.objectContaining({ Name: 'longanlingxin' }))
     })
   })
 
@@ -185,22 +184,30 @@ describe('Ticket 01 — Backend API: Engine param + voice list + /engines contra
       const { data: enginesData } = await fetchFromServer(server, '/api/v1/tts/engines')
       const cosyVoice = enginesData.data.find((e: any) => e.name === 'cosyvoice-tts')
 
-      if (cosyVoice) {
-        const { status, data } = await fetchFromServer(
-          server,
-          '/api/v1/tts/voiceList?engine=cosyvoice-tts'
-        )
-        expect(status).toBe(200)
-        expect(data.success).toBe(true)
-        expect(Array.isArray(data.data)).toBe(true)
-        // All Engine Plugins expose the same structured Voice contract.
-        expect(data.data).toContainEqual(
-          expect.objectContaining({ Name: 'longxiaochun', language: 'zh-CN' })
-        )
-      } else {
-        // Skip — CosyVoice not registered
-        console.log('Skipping CosyVoice voice list test: REGISTER_COSYVOICE not set')
-      }
+      expect(cosyVoice).toBeDefined()
+      const { status, data } = await fetchFromServer(
+        server,
+        '/api/v1/tts/voiceList?engine=cosyvoice-tts'
+      )
+      expect(status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(Array.isArray(data.data)).toBe(true)
+      expect(data.data).toContainEqual(
+        expect.objectContaining({ Name: 'longxiaochun', language: 'zh-CN' })
+      )
+    })
+
+    it('returns the configured Qwen system Voice list', async () => {
+      const { status, data } = await fetchFromServer(
+        server,
+        '/api/v1/tts/voiceList?engine=qwen-audio-tts'
+      )
+
+      expect(status).toBe(200)
+      expect(data.success).toBe(true)
+      expect(data.data).toEqual([
+        expect.objectContaining({ Name: 'longanlingxin', language: 'zh-CN' }),
+      ])
     })
   })
 

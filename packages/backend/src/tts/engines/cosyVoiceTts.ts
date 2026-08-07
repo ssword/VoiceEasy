@@ -1,4 +1,4 @@
-import { Readable } from 'stream'
+import { PassThrough, Readable } from 'stream'
 import { spawn } from 'child_process'
 import { TTSEngine, TtsOptions } from '../types'
 import { fetcher } from '../../utils/request'
@@ -59,9 +59,9 @@ export class CosyVoiceTtsEngine implements TTSEngine {
       input: {
         text,
         voice: options.voice || 'longxiaochun',
+        format: 'mp3',
       },
       parameters: {
-        format: 'mp3',
         sample_rate: 24000,
         speed: options.speed ?? 1,
         volume: Math.max(0, Math.min(1, volume)),
@@ -104,14 +104,41 @@ export class CosyVoiceTtsEngine implements TTSEngine {
     )
     pcm.pipe(ffmpeg.stdin!)
     ffmpeg.stderr?.on('data', (data: Buffer) => logger.debug(`[CosyVoice] ffmpeg: ${data.toString().trim()}`))
-    ffmpeg.once('error', (error) => ffmpeg.stdout?.destroy(error))
-    pcm.once('error', (error) => ffmpeg.stdout?.destroy(error))
+    const output = new PassThrough()
+    let outputBytes = 0
+    let settled = false
+
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      output.destroy(error)
+    }
+    ffmpeg.stdout!.on('data', (chunk: Buffer) => {
+      outputBytes += chunk.length
+      output.write(chunk)
+    })
+    ffmpeg.stdout!.once('error', fail)
+    ffmpeg.once('error', fail)
+    pcm.once('error', fail)
+    ffmpeg.stdin!.once('error', fail)
+    ffmpeg.once('close', (code) => {
+      if (settled) return
+      if (code !== 0) {
+        fail(new Error(`CosyVoice ffmpeg exited with code ${code}`))
+        return
+      }
+      if (outputBytes === 0) {
+        fail(new Error('CosyVoice ffmpeg completed with zero audio bytes'))
+        return
+      }
+      settled = true
+      output.end()
+    })
 
     const cleanup = () => {
       if (!ffmpeg.killed) ffmpeg.kill()
     }
-    ffmpeg.stdout!.once('close', cleanup)
-    ffmpeg.stdout!.once('error', cleanup)
-    return ffmpeg.stdout!
+    output.once('close', cleanup)
+    return output
   }
 }

@@ -380,7 +380,7 @@ const filteredVoices = computed(() => {
   return betterShowCN(
     voiceList.value.filter((voice) => {
       // For voices with explicit language field (e.g. Qwen-Audio-TTS), use that
-      const voiceLang = voice.language || voice.Name.split('-').slice(0, 2).join('-')
+      const voiceLang = voiceLanguage(voice)
       const matchLanguage =
         audioConfig.selectedLanguage === voiceLang ||
         voiceLang?.startsWith(audioConfig.selectedLanguage) ||
@@ -757,13 +757,27 @@ const fetchVoices = async (engineName: string) => {
   }
 }
 
+const voiceLanguage = (voice: Voice) =>
+  voice.language || voice.Name.split('-').slice(0, 2).join('-')
+
+const syncVoiceSelection = () => {
+  if (!voiceList.value.length) return
+
+  let available = filteredVoices.value
+  if (!available.length) {
+    updateConfig('selectedLanguage', voiceLanguage(voiceList.value[0]))
+    updateConfig('selectedGender', 'All')
+    available = filteredVoices.value
+  }
+
+  if (!available.some((voice) => voice.Name === audioConfig.selectedVoice)) {
+    updateConfig('selectedVoice', available[0]?.Name || voiceList.value[0].Name)
+  }
+}
+
 const handleEngineChange = async (engineName: string) => {
   await fetchVoices(engineName)
-  // Auto-select first voice if current voice doesn't exist in the new engine's list
-  const exists = voiceList.value.some((v) => v.Name === audioConfig.selectedVoice)
-  if (!exists && voiceList.value.length > 0) {
-    updateConfig('selectedVoice', voiceList.value[0].Name)
-  }
+  syncVoiceSelection()
   // Update supportsSubtitles based on engine info
   const engineInfo = engines.value.find((e) => e.name === engineName)
   updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
@@ -776,11 +790,7 @@ onMounted(async () => {
     engines.value = engResponse?.data!
     // Load voices for the current/default engine
     await fetchVoices(audioConfig.engine)
-    // Ensure selected voice exists in the list
-    const exists = voiceList.value.some((v) => v.Name === audioConfig.selectedVoice)
-    if (!exists && voiceList.value.length > 0) {
-      updateConfig('selectedVoice', voiceList.value[0].Name)
-    }
+    syncVoiceSelection()
     // Set initial supportsSubtitles
     const engineInfo = engines.value.find((e) => e.name === audioConfig.engine)
     updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)

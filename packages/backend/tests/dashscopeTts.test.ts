@@ -174,8 +174,8 @@ describe('CosyVoice Engine Plugin protocol', () => {
       expect.any(String),
       {
         model: 'cosyvoice-v3-flash',
-        input: { text: '你好', voice: 'longxiaochun' },
-        parameters: { format: 'mp3', sample_rate: 24000, speed: 1.25, volume: 0.75 },
+        input: { text: '你好', voice: 'longxiaochun', format: 'mp3' },
+        parameters: { sample_rate: 24000, speed: 1.25, volume: 0.75 },
       },
       expect.not.objectContaining({ responseType: 'stream' })
     )
@@ -208,7 +208,10 @@ describe('CosyVoice Engine Plugin protocol', () => {
       process.killed = true
     })
     process.stdin.once('data', (chunk) => process.stdout.write(Buffer.concat([Buffer.from('ID3'), chunk])))
-    process.stdin.once('end', () => process.stdout.end())
+    process.stdin.once('end', () => {
+      process.stdout.end()
+      process.emit('close', 0)
+    })
     jest.mocked(spawn).mockReturnValue(process as any)
 
     const result = await cosyVoice().synthesize('你好', { voice: 'longxiaochun', stream: true })
@@ -220,5 +223,41 @@ describe('CosyVoice Engine Plugin protocol', () => {
       { stdio: ['pipe', 'pipe', 'pipe'] }
     )
     expect(mp3).toEqual(Buffer.concat([Buffer.from('ID3'), pcm]))
+  })
+
+  it.each([
+    ['ffmpeg exits unsuccessfully', 1, Buffer.from('encoder diagnostics'), /ffmpeg exited with code 1/i],
+    ['ffmpeg produces no bytes', 0, Buffer.alloc(0), /zero audio bytes/i],
+  ])('rejects Streaming synthesis when %s', async (_name, exitCode, encoded, expected) => {
+    const pcm = Buffer.from([1, 2, 3, 4])
+    jest.mocked(fetcher.post).mockResolvedValue({
+      data: sse(JSON.stringify({ payload: { chunk: pcm.toString('base64') } }), '[DONE]'),
+    } as any)
+
+    const process = new EventEmitter() as EventEmitter & {
+      stdin: PassThrough
+      stdout: PassThrough
+      stderr: PassThrough
+      killed: boolean
+      kill: jest.Mock
+    }
+    process.stdin = new PassThrough()
+    process.stdout = new PassThrough()
+    process.stderr = new PassThrough()
+    process.killed = false
+    process.kill = jest.fn(() => {
+      process.killed = true
+    })
+    process.stdin.on('data', () => undefined)
+    process.stdin.once('end', () => {
+      if (encoded.length) process.stdout.write(encoded)
+      process.stdout.end()
+      process.emit('close', exitCode)
+    })
+    jest.mocked(spawn).mockReturnValue(process as any)
+
+    const result = await cosyVoice().synthesize('你好', { voice: 'longxiaochun', stream: true })
+
+    await expect(readAll(result as Readable)).rejects.toThrow(expected)
   })
 })
