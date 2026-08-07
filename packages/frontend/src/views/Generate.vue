@@ -279,6 +279,7 @@ import {
 } from '@/utils'
 import confetti from 'canvas-confetti'
 import { useAudioConfigStore, type AudioConfig } from '@/stores/audioConfig'
+import { getEngineSelection, getVoiceLanguage } from '@/utils/engineSelection'
 import { defaultVoiceList, previewTextSelect } from '@/constants/voice'
 import DownloadList from '@/components/DownloadList.vue'
 import Notification from '@/assets/notification.mp3'
@@ -380,7 +381,7 @@ const filteredVoices = computed(() => {
   return betterShowCN(
     voiceList.value.filter((voice) => {
       // For voices with explicit language field (e.g. Qwen-Audio-TTS), use that
-      const voiceLang = voiceLanguage(voice)
+      const voiceLang = getVoiceLanguage(voice)
       const matchLanguage =
         audioConfig.selectedLanguage === voiceLang ||
         voiceLang?.startsWith(audioConfig.selectedLanguage) ||
@@ -757,30 +758,22 @@ const fetchVoices = async (engineName: string) => {
   }
 }
 
-const voiceLanguage = (voice: Voice) =>
-  voice.language || voice.Name.split('-').slice(0, 2).join('-')
-
-const syncVoiceSelection = () => {
-  if (!voiceList.value.length) return
-
-  let available = filteredVoices.value
-  if (!available.length) {
-    updateConfig('selectedLanguage', voiceLanguage(voiceList.value[0]))
-    updateConfig('selectedGender', 'All')
-    available = filteredVoices.value
-  }
-
-  if (!available.some((voice) => voice.Name === audioConfig.selectedVoice)) {
-    updateConfig('selectedVoice', available[0]?.Name || voiceList.value[0].Name)
-  }
+const syncEngineSelection = (engineName: string) => {
+  const engineInfo = engines.value.find((engine) => engine.name === engineName)
+  const selection = getEngineSelection(
+    audioConfig,
+    voiceList.value,
+    engineInfo?.supportsSubtitles !== false
+  )
+  updateConfig('selectedLanguage', selection.selectedLanguage)
+  updateConfig('selectedGender', selection.selectedGender)
+  updateConfig('selectedVoice', selection.selectedVoice)
+  updateConfig('supportsSubtitles', selection.supportsSubtitles)
 }
 
 const handleEngineChange = async (engineName: string) => {
   await fetchVoices(engineName)
-  syncVoiceSelection()
-  // Update supportsSubtitles based on engine info
-  const engineInfo = engines.value.find((e) => e.name === engineName)
-  updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
+  syncEngineSelection(engineName)
 }
 
 onMounted(async () => {
@@ -790,10 +783,7 @@ onMounted(async () => {
     engines.value = engResponse?.data!
     // Load voices for the current/default engine
     await fetchVoices(audioConfig.engine)
-    syncVoiceSelection()
-    // Set initial supportsSubtitles
-    const engineInfo = engines.value.find((e) => e.name === audioConfig.engine)
-    updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
+    syncEngineSelection(audioConfig.engine)
   } catch (error) {
     handle429(error)
   }

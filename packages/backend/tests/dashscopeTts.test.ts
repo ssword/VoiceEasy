@@ -99,6 +99,12 @@ describe('Qwen-Audio-TTS Engine Plugin protocol', () => {
     expect(plusNames.every((name) => !name.startsWith('qwen-audio-3.0-tts-'))).toBe(true)
   })
 
+  it('rejects an unsupported model instead of pairing it with Plus Voices', () => {
+    expect(() => qwen('qwen-audio-future-model')).toThrow(
+      'Unsupported Qwen-Audio-TTS model: qwen-audio-future-model'
+    )
+  })
+
   it('returns decoded MP3 bytes for Streaming and non-streaming synthesis', async () => {
     const mp3 = Buffer.from('ID3-test-audio')
     jest.mocked(fetcher.post).mockImplementation(async () => ({

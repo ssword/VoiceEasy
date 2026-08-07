@@ -54,8 +54,6 @@ const MODEL_VOICES: Record<string, Voice[]> = {
   ],
 }
 
-const DEFAULT_VOICES = MODEL_VOICES['qwen-audio-3.0-tts-plus']
-
 export class QwenAudioTtsEngine implements TTSEngine {
   readonly name = 'qwen-audio-tts'
   readonly supportsSubtitles = false
@@ -63,8 +61,12 @@ export class QwenAudioTtsEngine implements TTSEngine {
   private readonly voices: Voice[]
 
   constructor(config: DashScopeConfig) {
+    const voices = MODEL_VOICES[config.model]
+    if (!voices) {
+      throw new Error(`Unsupported Qwen-Audio-TTS model: ${config.model}`)
+    }
     this.transport = new DashScopeTransport(config, this.name)
-    this.voices = MODEL_VOICES[config.model] || DEFAULT_VOICES
+    this.voices = voices
   }
 
   async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
