@@ -17,8 +17,10 @@ interface TTSParams {
   pitch: string
   output: string
   engine?: string
+  instruction?: string
 }
 type BuildSegment = TTSParams & {
   text: string
   engine?: string
+  instruction?: string
 }

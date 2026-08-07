@@ -32,6 +32,7 @@ function formatBody({ text, pitch, voice, volume, rate, useLLM, engine }: EdgeSc
  * @returns ReadableStream
  */
 export async function createTaskStream(req: Request, res: Response, next: NextFunction) {
+  let task: ReturnType<typeof taskManager.createTask> | undefined
   try {
     if (req.query?.mock) {
       logger.info('Mocking audio stream...')
@@ -40,16 +41,19 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
     }
     logger.debug('Generating audio with body:', req.body)
     const formattedBody = formatBody(req.body)
-    const task = taskManager.createTask(formattedBody)
+    task = taskManager.createTask(formattedBody)
     task.context = { req, res, body: req.body }
     logger.info(`Generated stream task ID: ${task.id}`)
-    generateTTSStream(formattedBody, task)
+    await generateTTSStream(formattedBody, task)
   } catch (error) {
-    console.log(`createTaskStream error:`, error)
+    const message = error instanceof Error ? error.message : String(error)
+    if (task) taskManager.failTask(task.id, { message })
+    logger.error(`createTaskStream error: ${message}`)
     next(error)
   }
 }
 export async function generateJson(req: Request, res: Response, next: NextFunction) {
+  let task: ReturnType<typeof taskManager.createTask> | undefined
   try {
     const data = req.body?.data
     logger.debug('generateJson with body:', data)
@@ -59,15 +63,17 @@ export async function generateJson(req: Request, res: Response, next: NextFuncti
       ...formatedBody[0],
       text,
     }
-    const task = taskManager.createTask(taskParams)
+    task = taskManager.createTask(taskParams)
     const voice = formatedBody[0].voice
 
     const segment: Segment = { id: generateId(voice, text), text }
     task.context = { req, res, segment, body: req.body }
     logger.info(`Generated stream task ID: ${task.id}`)
-    generateTTSStreamJson(formatedBody, task)
+    await generateTTSStreamJson(formatedBody, task)
   } catch (error) {
-    console.log(`createTaskStream error:`, error)
+    const message = error instanceof Error ? error.message : String(error)
+    if (task) taskManager.failTask(task.id, { message })
+    logger.error(`generateJson error: ${message}`)
     next(error)
   }
 }

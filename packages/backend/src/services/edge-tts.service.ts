@@ -11,8 +11,9 @@ export const generateSingleVoice = async (params: {
   volume?: string
   output: string
   engine?: string
+  instruction?: string
 }) => {
-  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE } = params
+  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE, instruction } = params
   let result: TTSResult = {
     audio: '',
     srt: '',
@@ -32,6 +33,7 @@ export const generateSingleVoice = async (params: {
         outputType: 'buffer',
         saveSubtitles: engineInstance.supportsSubtitles !== false,
         output,
+        instruction,
       } as any)) as Buffer
       await fs.writeFile(output, buffer)
       result = {
@@ -52,8 +54,9 @@ export const generateSingleVoiceStream = async (params: {
   output: string
   outputType?: string
   engine?: string
+  instruction?: string
 }) => {
-  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE } = params
+  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE, instruction } = params
   const engineInstance = ttsPluginManager.getEngine(engine)
   if (!engineInstance) {
     throw new Error(`TTS engine not found: ${engine}`)
@@ -67,6 +70,7 @@ export const generateSingleVoiceStream = async (params: {
     outputType: 'stream',
     saveSubtitles: engineInstance.supportsSubtitles !== false,
     output,
+    instruction,
   } as any)
 }
 

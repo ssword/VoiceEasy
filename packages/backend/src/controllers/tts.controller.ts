@@ -7,6 +7,7 @@ import { ALLOWED_EXTENSIONS, AUDIO_DIR, DEFAULT_ENGINE } from '../config'
 import { EdgeSchema } from '../schema/generate'
 import taskManager from '../utils/taskManager'
 import { ttsPluginManager } from '../tts/pluginManager'
+import { getPublicVoiceOptions } from '../tts/voiceOptions'
 function formatBody({ text, pitch, voice, volume, rate, useLLM, engine }: EdgeSchema) {
   const positivePercent = (value: string | undefined) => {
     if (value === '0%' || value === '0' || value === undefined) return '+0%'
@@ -175,22 +176,11 @@ export async function getVoiceList(req: Request, res: Response, next: NextFuncti
       return
     }
 
-    if (engine.getVoiceOptions) {
-      const voiceNames = await engine.getVoiceOptions()
-      res.json({
-        code: 200,
-        data: voiceNames,
-        success: true,
-      })
-    } else {
-      // Fallback to EdgeTTS voice.json for backward compatibility
-      const voices = require('../llm/prompt/voice.json')
-      res.json({
-        code: 200,
-        data: voices,
-        success: true,
-      })
-    }
+    res.json({
+      code: 200,
+      data: await getPublicVoiceOptions(engine),
+      success: true,
+    })
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)
     logger.error(`getVoiceList Error: ${errorMessage}`)

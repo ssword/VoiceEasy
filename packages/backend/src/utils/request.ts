@@ -56,16 +56,32 @@ instance.interceptors.response.use(
     const url = config.url || 'unknown URL'
 
     if (error.response) {
-      const { status } = error.response
-      if (status === 403) {
-        logger.warn(`Forbidden access: ${url}`)
-      } else if (status === 500) {
-        logger.error(`Server error: ${url}`)
+      const { status, data } = error.response
+      let responseBody: string
+      if (typeof data === 'string') {
+        // Only show first 300 chars, and only if it looks like text (not binary)
+        const preview = data.slice(0, 300)
+        responseBody = /^[\x20-\x7e\u4e00-\u9fff\n\r\t{}[\]":,]+/.test(preview)
+          ? preview
+          : `[Binary/encoded data ${data.length} bytes]`
+      } else if (Buffer.isBuffer(data)) {
+        responseBody = `[Buffer ${data.length} bytes]`
+      } else if (data && typeof data === 'object' && data.pipe) {
+        responseBody = `[ReadableStream]`
+      } else if (data && typeof data === 'object') {
+        try {
+          responseBody = JSON.stringify(data).slice(0, 500)
+        } catch {
+          responseBody = `[Object]`
+        }
+      } else {
+        responseBody = String(data).slice(0, 200)
       }
+      logger.error(`HTTP ${status} ${config.method?.toUpperCase()} ${url}: ${responseBody}`)
     } else if (error.code === 'ECONNABORTED') {
-      logger.error(`Request timeout: ${url}`)
+      logger.error(`Timeout: ${config.method?.toUpperCase()} ${url}`)
     } else {
-      logger.error(`Network error: ${url}`, { error: error.message })
+      logger.error(`Network error: ${config.method?.toUpperCase()} ${url} — ${error.message}`)
     }
     return Promise.reject(error)
   }
@@ -78,10 +94,10 @@ const _request = async <T = any>(config: CustomConfig): Promise<ResponseData<T>>
   } catch (error: any) {
     const logError = config.logError ?? true
     if (logError) {
-      logger.error(`Request failed: ${config.url || 'unknown URL'}`, {
-        method: config.method,
-        error: error.message,
-      })
+      const msg = error?.response?.status
+        ? `Request failed: ${config.url} [${error.response.status}] ${error.message}`
+        : `Request failed: ${config.url || 'unknown URL'} — ${error.message}`
+      logger.error(msg)
     }
     throw error
   }

@@ -1,5 +1,5 @@
 import { AxiosError } from 'axios'
-import { MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_KEY } from '../config'
+import { MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_TIMEOUT_MS } from '../config'
 import { logger } from './logger'
 import { fetcher } from './request'
 
@@ -20,12 +20,12 @@ export function createOpenAIClient() {
   let currentConfig: OpenAIConfig = {
     baseURL: OPENAI_BASE_URL,
     model: MODEL_NAME,
-    timeout: 60000,
+    timeout: OPENAI_TIMEOUT_MS,
     apiKey: OPENAI_API_KEY,
   }
   logger.debug(`init openai with: `, {
     ...currentConfig,
-    apiKey: currentConfig?.apiKey ? currentConfig?.apiKey?.slice(0, 10) + '***' : undefined,
+    apiKey: currentConfig?.apiKey ? '[REDACTED]' : undefined,
   })
   // 设置 headers
   const getHeaders = () => ({
@@ -64,11 +64,20 @@ export function createOpenAIClient() {
         }
       )
 
+      // Log LLM request/response summary
+      const requestModel = request.model || mergedConfig.model
+      const lastMsg = request.messages?.[request.messages.length - 1]
+      const promptPreview = typeof lastMsg?.content === 'string' ? lastMsg.content.slice(0, 150) : ''
+      logger.info(`LLM → ${requestModel} | ${promptPreview}...`)
+      const responseContent = response.data?.choices?.[0]?.message?.content
+      const resStr = typeof responseContent === 'string' ? responseContent : JSON.stringify(responseContent)
+      logger.info(`LLM ← ${requestModel} | tokens:${response.data?.usage?.total_tokens ?? '?'} | ${resStr.slice(0, 500)}`)
+      logger.debug(`LLM ← full content:\n${resStr}`)
+
       return response.data
     } catch (error) {
-      console.log(error)
       if (error instanceof AxiosError) {
-        console.log(`createChatCompletion`, error.response?.data?.error)
+        logger.error(`LLM error: ${error.response?.status} ${JSON.stringify(error.response?.data?.error || error.message).slice(0, 300)}`)
       }
       throw new Error(
         `Chat completion request failed: ${error instanceof Error ? error.message : String(error)}`
@@ -106,7 +115,10 @@ export function createOpenAIClient() {
       ...currentConfig,
       ...newConfig,
     }
-    logger.debug(`openai currentConfig:`, currentConfig)
+    logger.debug(`openai currentConfig:`, {
+      ...currentConfig,
+      apiKey: currentConfig.apiKey ? '[REDACTED]' : undefined,
+    })
   }
 
   return {

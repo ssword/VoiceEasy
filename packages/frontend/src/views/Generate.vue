@@ -49,6 +49,26 @@
             </div>
           </template>
 
+          <!-- 语音引擎选择（始终可见） -->
+          <div class="voice-selector">
+            <el-form label-position="top" size="default">
+              <el-form-item label="合成引擎">
+                <el-select
+                  v-model="audioConfig.engine"
+                  placeholder="选择引擎"
+                  @change="handleEngineChange"
+                >
+                  <el-option
+                    v-for="eng in engines"
+                    :key="eng.name"
+                    :label="eng.name"
+                    :value="eng.name"
+                  />
+                </el-select>
+              </el-form-item>
+            </el-form>
+          </div>
+
           <!-- 语音选择模式切换 -->
           <div class="voice-mode-selector">
             <el-radio-group v-model="audioConfig.voiceMode" size="large">
@@ -69,21 +89,6 @@
           <!-- 预设语音选择 -->
           <div v-if="audioConfig.voiceMode === 'preset'" class="voice-selector">
             <el-form label-position="top" size="default">
-              <el-form-item label="引擎">
-                <el-select
-                  v-model="audioConfig.engine"
-                  placeholder="选择引擎"
-                  @change="handleEngineChange"
-                >
-                  <el-option
-                    v-for="eng in engines"
-                    :key="eng.name"
-                    :label="eng.name"
-                    :value="eng.name"
-                  />
-                </el-select>
-              </el-form-item>
-
               <el-form-item label="语言">
                 <el-select
                   v-model="audioConfig.selectedLanguage"
@@ -126,6 +131,12 @@
                   >
                     <div class="voice-option">
                       <span>{{ voice.cnName || voice.Name }}</span>
+                      <span class="voice-trait" v-if="voice.VoicePersonalities?.[0] || voice.trait">{{
+                        voice.VoicePersonalities?.[0] || voice.trait
+                      }}</span>
+                      <span class="voice-gender-age" v-if="voice.Gender">
+                        {{ voice.Gender === 'Male' ? '♂' : '♀' }}{{ voice.age ? ' ' + voice.age : '' }}
+                      </span>
                       <Sparkles
                         :size="16"
                         :stroke-width="1.25"
@@ -351,7 +362,7 @@ const reset = () => {
     configStore.reset()
   })
 }
-const updateConfig = (prop: keyof AudioConfig, value: string) => {
+const updateConfig = <K extends keyof AudioConfig>(prop: K, value: AudioConfig[K]) => {
   configStore.updateConfig(prop, value)
 }
 const betterShowCN = (voiceList: Voice[]) => {
@@ -359,7 +370,7 @@ const betterShowCN = (voiceList: Voice[]) => {
     return voiceList.map((voice) => {
       return {
         ...voice,
-        cnName: mapZHVoiceName(voice.Name) ?? voice.Name,
+        cnName: mapZHVoiceName(voice.Name) ?? voice.cnName ?? voice.Name,
       }
     })
   }
@@ -368,7 +379,12 @@ const betterShowCN = (voiceList: Voice[]) => {
 const filteredVoices = computed(() => {
   return betterShowCN(
     voiceList.value.filter((voice) => {
-      const matchLanguage = voice.Name.startsWith(audioConfig.selectedLanguage)
+      // For voices with explicit language field (e.g. Qwen-Audio-TTS), use that
+      const voiceLang = voice.language || voice.Name.split('-').slice(0, 2).join('-')
+      const matchLanguage =
+        audioConfig.selectedLanguage === voiceLang ||
+        voiceLang?.startsWith(audioConfig.selectedLanguage) ||
+        voice.Name.startsWith(audioConfig.selectedLanguage)
       const matchGender =
         audioConfig.selectedGender === 'All' || voice.Gender === audioConfig.selectedGender
       return matchLanguage && matchGender
@@ -850,6 +866,20 @@ onMounted(async () => {
   display: flex;
   flex-direction: row;
   align-items: center;
+  gap: 8px;
+}
+
+.voice-trait {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.voice-gender-age {
+  font-size: 0.75rem;
+  color: #94a3b8;
 }
 
 .voice-personality {

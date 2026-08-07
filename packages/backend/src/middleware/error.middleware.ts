@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
-import { logger } from '../utils/logger'
+import { logger, redactSecrets } from '../utils/logger'
 import { ErrorMessages } from '../services/tts.service'
 
 export function errorHandler(err: Error, req: Request, res: Response, next: NextFunction) {
@@ -19,17 +19,7 @@ export function errorHandler(err: Error, req: Request, res: Response, next: Next
     },
   }
 
-  logger.error('Error occurred:', {
-    ...errorDetails,
-    request: {
-      ...errorDetails.request,
-      body: {
-        ...errorDetails.request.body,
-        password: undefined,
-        authorization: undefined,
-      },
-    },
-  })
+  logger.error('Error occurred:', redactSecrets(errorDetails))
   const code = getCode(err.message)
   res.status(code).json({
     success: false,
@@ -38,8 +28,6 @@ export function errorHandler(err: Error, req: Request, res: Response, next: Next
   })
 }
 function getCode(message: string): number {
-  console.log(`message, ErrorMessages.ENG_MODEL_INVALID_TEXT`)
-  console.log(message, ErrorMessages.ENG_MODEL_INVALID_TEXT)
   if (message.includes(ErrorMessages.ENG_MODEL_INVALID_TEXT)) return 400
   return 500
 }

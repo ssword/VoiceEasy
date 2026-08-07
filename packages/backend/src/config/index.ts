@@ -19,6 +19,7 @@ export const ALLOWED_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.flac', '.sr
 export const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 export const MODEL_NAME = process.env.MODEL_NAME
+export const OPENAI_TIMEOUT_MS = parseInt(process.env.OPENAI_TIMEOUT_MS || '120000', 10)
 
 export const STATIC_DOMAIN = process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : ''
 
@@ -38,6 +39,9 @@ export const REGISTER_COSYVOICE = process.env.REGISTER_COSYVOICE === 'true' || f
 export const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || ''
 export const DASHSCOPE_WORKSPACE_ID = process.env.DASHSCOPE_WORKSPACE_ID || ''
 export const COSYVOICE_MODEL = process.env.COSYVOICE_MODEL || 'cosyvoice-v3-flash'
+
+export const REGISTER_QWEN_AUDIO_TTS = process.env.REGISTER_QWEN_AUDIO_TTS === 'true' || false
+export const QWEN_AUDIO_TTS_MODEL = process.env.QWEN_AUDIO_TTS_MODEL || 'qwen-audio-3.0-tts-plus'
 
 export const LIMIT_TEXT_LENGTH = parseInt(process.env.LIMIT_TEXT_LENGTH || '0')
 export const LIMIT_TEXT_LENGTH_ERROR_MESSAGE = process.env.LIMIT_TEXT_LENGTH_ERROR_MESSAGE

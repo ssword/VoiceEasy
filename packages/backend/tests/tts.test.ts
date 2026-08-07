@@ -2,6 +2,8 @@ import http from 'http'
 import { AddressInfo } from 'net'
 import { createApp } from '../src/app'
 import { AUDIO_DIR, PUBLIC_DIR } from '../src/config'
+import { Readable } from 'stream'
+import { TTSEngine, TtsOptions } from '../src/tts/types'
 
 // Mock franc (ESM) — Jest cannot parse its import statements in CJS mode.
 // Dynamic import('franc') in getLangConfig will resolve to this mock.
@@ -18,16 +20,43 @@ const TEST_PUBLIC_DIR = PUBLIC_DIR
 const RATE_LIMIT = 1e6
 const RATE_LIMIT_WINDOW = 10
 
-// Longer timeout for TTS synthesis tests (network calls)
+// Bound for local HTTP synthesis tests using deterministic fake Engine Plugins.
 const TTS_TIMEOUT = 30_000
 
-function createTestServer() {
+function createTestServer(edgeSupportsSubtitles = true) {
+  class FakeEngine implements TTSEngine {
+    constructor(
+      readonly name: string,
+      readonly supportsSubtitles: boolean
+    ) {}
+
+    async synthesize(_text: string, options: TtsOptions): Promise<Buffer | Readable> {
+      const audio = Buffer.from('ID3-deterministic-test-audio')
+      return options.stream ? Readable.from([audio]) : audio
+    }
+
+    async getSupportedLanguages() {
+      return ['en-US', 'zh-CN']
+    }
+
+    async getVoiceOptions() {
+      return this.name === 'edge-tts'
+        ? ['en-US-AriaNeural', 'en-US-JennyNeural']
+        : [{ Name: 'longxiaochun', Gender: 'Female', language: 'zh-CN' }]
+    }
+  }
+
+  const engines: TTSEngine[] = [new FakeEngine('edge-tts', edgeSupportsSubtitles)]
+  if (process.env.REGISTER_COSYVOICE === 'true') {
+    engines.push(new FakeEngine('cosyvoice-tts', false))
+  }
   const app = createApp({
     isDev: true,
     rateLimit: RATE_LIMIT,
     rateLimitWindow: RATE_LIMIT_WINDOW,
     audioDir: TEST_AUDIO_DIR,
     publicDir: TEST_PUBLIC_DIR,
+    engines,
   })
   return http.createServer(app)
 }
@@ -89,6 +118,7 @@ describe('Ticket 01 — Backend API: Engine param + voice list + /engines contra
         expect(Array.isArray(engine.languages)).toBe(true)
         expect(engine).toHaveProperty('voices')
         expect(Array.isArray(engine.voices)).toBe(true)
+        expect(engine.voices.every((voice: any) => typeof voice.Name === 'string')).toBe(true)
         expect(engine).toHaveProperty('supportsSubtitles')
         expect(typeof engine.supportsSubtitles).toBe('boolean')
       }
@@ -134,6 +164,10 @@ describe('Ticket 01 — Backend API: Engine param + voice list + /engines contra
       expect(data.success).toBe(true)
       expect(data.data).toBeDefined()
       expect(Array.isArray(data.data)).toBe(true)
+      expect(typeof data.data[0].Name).toBe('string')
+      expect(typeof data.data[0].Gender).toBe('string')
+      expect(Array.isArray(data.data[0].ContentCategories)).toBe(true)
+      expect(Array.isArray(data.data[0].VoicePersonalities)).toBe(true)
     })
 
     it('returns 400 for unregistered engine', async () => {
@@ -159,8 +193,10 @@ describe('Ticket 01 — Backend API: Engine param + voice list + /engines contra
         expect(status).toBe(200)
         expect(data.success).toBe(true)
         expect(Array.isArray(data.data)).toBe(true)
-        // CosyVoice voices should include known voices
-        expect(data.data).toContain('longxiaochun')
+        // All Engine Plugins expose the same structured Voice contract.
+        expect(data.data).toContainEqual(
+          expect.objectContaining({ Name: 'longxiaochun', language: 'zh-CN' })
+        )
       } else {
         // Skip — CosyVoice not registered
         console.log('Skipping CosyVoice voice list test: REGISTER_COSYVOICE not set')
@@ -203,7 +239,7 @@ describe('Ticket 05 — generateJson per-segment engine override', () => {
   let server: http.Server
 
   beforeAll((done) => {
-    server = createTestServer()
+    server = createTestServer(false)
     server.listen(0, () => done())
   })
 
@@ -352,7 +388,7 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
   let server: http.Server
 
   beforeAll((done) => {
-    server = createTestServer()
+    server = createTestServer(false)
     server.listen(0, () => done())
   })
 

@@ -66,12 +66,7 @@ export async function safeRunWithRetry<T>(
 // 默认错误处理器
 function defaultErrorHandler(err: unknown, attempt: number): void {
   const message = err instanceof Error ? err.message : String(err)
-  const fnName = (err as any)?.fn?.name || 'anonymous'
-  if (message.includes('Invalid response status')) {
-    console.log(`Attempt ${attempt} failed for ${fnName}: ${message}`)
-  } else {
-    console.error(`Attempt ${attempt} failed for ${fnName}:`, (err as Error).message)
-  }
+  logger.warn(`Attempt ${attempt} failed: ${message}`)
 }
 export async function asyncSleep(delay = 200) {
   return new Promise((resolve) => setTimeout(resolve, delay))
@@ -148,7 +143,8 @@ export function streamToResponse(
   // 输入流错误处理
   inputStream.on('error', (err: Error) => {
     if (isClientDisconnected) return
-    logger.error('Input stream error:', err)
+    logger.error(`Input stream error: ${err.message}`)
+    if (!res.headersSent) res.status(500)
     const errorMessage = onError(err)
     outputStream.write(errorMessage)
     outputStream.end()
@@ -157,7 +153,7 @@ export function streamToResponse(
   // 输出流错误处理
   outputStream.on('error', (err: Error) => {
     if (isClientDisconnected) return
-    logger.error('Output stream error:', err)
+    logger.error('Output stream error:', err.message)
     res.status(500).end('Internal server error')
   })
 
@@ -171,7 +167,7 @@ export function streamToResponse(
   }
 
   inputStream.on('uncaughtException' as any, (err: Error) => {
-    logger.error('Uncaught exception in input stream:', err)
+    logger.error(`Uncaught exception in input stream: ${err.message}`)
     if (!isClientDisconnected) {
       res.status(500).end('Internal server error')
     }

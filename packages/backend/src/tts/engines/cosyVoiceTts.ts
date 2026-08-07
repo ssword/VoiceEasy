@@ -1,244 +1,117 @@
-import { Readable, PassThrough } from 'stream'
+import { Readable } from 'stream'
 import { spawn } from 'child_process'
 import { TTSEngine, TtsOptions } from '../types'
 import { fetcher } from '../../utils/request'
 import { logger } from '../../utils/logger'
+import {
+  DashScopeConfig,
+  DashScopeTransport,
+  decodeBase64,
+  decodeDashScopeSse,
+} from './dashscopeBase'
 
-interface CosyVoiceConfig {
-  apiKey: string
-  workspaceId: string
-  model: string
+type CosyVoiceResponse = {
+  output?: { audio_url?: string }
+  code?: string
+  message?: string
 }
 
 const COSYVOICE_VOICES = [
-  'longxiaochun',
-  'longyu',
-  'longchen',
-  'longyue',
-  'longzhe',
-  'longfei',
-  'longbai',
-  'longshu',
-  'longjing',
-  'longyi',
-]
+  { Name: 'longxiaochun', cnName: '龙小春', Gender: 'Female', language: 'zh-CN' },
+  { Name: 'longyu', cnName: '龙宇', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longchen', cnName: '龙晨', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longyue', cnName: '龙悦', Gender: 'Female', language: 'zh-CN' },
+  { Name: 'longzhe', cnName: '龙哲', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longfei', cnName: '龙飞', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longbai', cnName: '龙白', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longshu', cnName: '龙书', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longjing', cnName: '龙井', Gender: 'Male', language: 'zh-CN' },
+  { Name: 'longyi', cnName: '龙一', Gender: 'Male', language: 'zh-CN' },
+].map((item) => ({ ...item, ContentCategories: [], VoicePersonalities: [] }))
 
 export class CosyVoiceTtsEngine implements TTSEngine {
-  name = 'cosyvoice-tts'
-  supportsSubtitles = false
-  private baseUrl: string
-  private apiKey: string
-  private model: string
+  readonly name = 'cosyvoice-tts'
+  readonly supportsSubtitles = false
+  private readonly transport: DashScopeTransport
 
-  constructor(config: CosyVoiceConfig) {
-    if (!config.apiKey) {
-      throw new Error('CosyVoice TTS requires DASHSCOPE_API_KEY.')
-    }
-    if (!config.workspaceId) {
-      throw new Error('CosyVoice TTS requires DASHSCOPE_WORKSPACE_ID.')
-    }
-    this.apiKey = config.apiKey
-    this.model = config.model || 'cosyvoice-v3-flash'
-    this.baseUrl = `https://${config.workspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer`
+  constructor(config: DashScopeConfig) {
+    this.transport = new DashScopeTransport(config, this.name)
   }
 
   async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
-    const { voice = 'longxiaochun', speed = 1.0, volume = 1.0, stream = false } = options
-
-    if (typeof text !== 'string' || text.length === 0) {
-      throw new Error('Input text is required.')
-    }
-
-    const requestBody = {
-      model: this.model,
-      input: {
-        text,
-        voice,
-        format: 'mp3',
-      },
-      parameters: {
-        sample_rate: 24000,
-        speed,
-        volume: typeof volume === 'number' ? Math.max(0, Math.min(1, volume)) : 1.0,
-      },
-    }
-
-    if (stream) {
-      return this.synthesizeStream(requestBody)
-    }
-    return this.synthesizeBuffer(requestBody)
-  }
-
-  /**
-   * Non-streaming: POST → get audio URL → download → return Buffer.
-   */
-  private async synthesizeBuffer(requestBody: unknown): Promise<Buffer> {
-    logger.info('[CosyVoice] Non-streaming synthesis request')
-    const response = await fetcher.post<{ output?: { audio_url?: string }; code?: string; message?: string }>(
-      this.baseUrl,
-      requestBody as Record<string, unknown>,
-      {
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    )
-
-    const data = response.data
-    if (!data || data.code) {
-      throw new Error(`CosyVoice API error: ${data?.message || 'unknown error'}`)
-    }
-
-    const audioUrl = data?.output?.audio_url
-    if (!audioUrl) {
-      throw new Error('CosyVoice response missing audio_url')
-    }
-
-    logger.info(`[CosyVoice] Downloading audio from URL: ${audioUrl.slice(0, 80)}...`)
-    const audioResponse = await fetcher.get<ArrayBuffer>(audioUrl, undefined, {
-      responseType: 'arraybuffer',
-    })
-    return Buffer.from(audioResponse.data as unknown as ArrayBuffer)
-  }
-
-  /**
-   * Streaming: POST with X-DashScope-SSE → parse SSE → decode base64 PCM → ffmpeg → MP3 Readable.
-   */
-  private async synthesizeStream(requestBody: unknown): Promise<Readable> {
-    logger.info('[CosyVoice] Streaming synthesis request')
-    const response = await fetcher.post(this.baseUrl, requestBody as Record<string, unknown>, {
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-        'X-DashScope-SSE': 'enable',
-      },
-      responseType: 'stream',
-      timeout: 120_000,
-    })
-
-    const sseStream = response.data as Readable
-    const pcmStream = this.parseSSEToPcm(sseStream)
-    return this.pcmToMp3Stream(pcmStream)
-  }
-
-  /**
-   * Parse SSE text stream to raw PCM binary stream.
-   * SSE format: data:{"header":{...},"payload":{"chunk":"<base64>"}}
-   * Non-JSON data lines are PCM already (some versions of the API).
-   */
-  private parseSSEToPcm(sseStream: Readable): Readable {
-    const out = new PassThrough()
-    let buffer = ''
-
-    sseStream.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf-8')
-      const lines = buffer.split('\n')
-      // Keep the last potentially incomplete line in the buffer
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || trimmed === 'data:[DONE]') continue
-
-        if (trimmed.startsWith('data:')) {
-          const payload = trimmed.slice(5).trim()
-          try {
-            const parsed = JSON.parse(payload)
-            const base64Chunk = parsed?.payload?.chunk
-            if (base64Chunk) {
-              const pcmBuffer = Buffer.from(base64Chunk, 'base64')
-              out.push(pcmBuffer)
-            }
-          } catch {
-            // If not valid JSON, treat as raw base64 (some API versions)
-            try {
-              const pcmBuffer = Buffer.from(payload, 'base64')
-              out.push(pcmBuffer)
-            } catch {
-              // Skip unparseable lines
-            }
-          }
-        }
-      }
-    })
-
-    sseStream.on('end', () => {
-      // Process remaining buffer
-      if (buffer.trim() && buffer.trim() !== 'data:[DONE]') {
-        const trimmed = buffer.trim()
-        if (trimmed.startsWith('data:')) {
-          const payload = trimmed.slice(5).trim()
-          try {
-            const parsed = JSON.parse(payload)
-            const base64Chunk = parsed?.payload?.chunk
-            if (base64Chunk) {
-              out.push(Buffer.from(base64Chunk, 'base64'))
-            }
-          } catch {
-            // skip
-          }
-        }
-      }
-      out.end()
-    })
-
-    sseStream.on('error', (err) => {
-      logger.error('[CosyVoice] SSE stream error:', err.message)
-      out.destroy(err)
-    })
-
-    return out
-  }
-
-  /**
-   * Convert PCM audio stream to MP3 via ffmpeg child process.
-   * PCM parameters: 24kHz, 16-bit, mono (matching CosyVoice default).
-   */
-  private pcmToMp3Stream(pcmStream: Readable): Readable {
-    const ffmpegArgs = [
-      '-f', 's16le',       // signed 16-bit little-endian PCM
-      '-ar', '24000',      // 24kHz sample rate
-      '-ac', '1',           // mono
-      '-i', 'pipe:0',      // stdin
-      '-f', 'mp3',          // output format
-      '-b:a', '96k',        // bitrate
-      'pipe:1',             // stdout
-    ]
-
-    const ffmpeg = spawn('ffmpeg', ffmpegArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    pcmStream.pipe(ffmpeg.stdin!)
-
-    ffmpeg.stderr?.on('data', (data: Buffer) => {
-      logger.debug(`[CosyVoice] ffmpeg: ${data.toString().trim()}`)
-    })
-
-    ffmpeg.on('error', (err) => {
-      logger.error('[CosyVoice] ffmpeg process error:', err.message)
-    })
-
-    // Wrap stdout as Readable and clean up on close
-    const mp3Stream = ffmpeg.stdout! as Readable
-    const cleanup = () => {
-      if (!ffmpeg.killed) {
-        ffmpeg.kill()
-      }
-    }
-    mp3Stream.on('close', cleanup)
-    mp3Stream.on('error', cleanup)
-    pcmStream.on('error', cleanup)
-
-    return mp3Stream
+    if (!text) throw new Error('Input text is required.')
+    const request = this.buildRequest(text, options)
+    return options.stream ? this.synthesizeStream(request) : this.synthesizeBuffer(request)
   }
 
   async getSupportedLanguages(): Promise<string[]> {
     return ['zh-CN', 'en-US']
   }
 
-  async getVoiceOptions(): Promise<string[]> {
+  async getVoiceOptions() {
     return COSYVOICE_VOICES
+  }
+
+  private buildRequest(text: string, options: TtsOptions): Record<string, unknown> {
+    const volume = typeof options.volume === 'number' ? options.volume : 1
+    return {
+      model: this.transport.model,
+      input: {
+        text,
+        voice: options.voice || 'longxiaochun',
+      },
+      parameters: {
+        format: 'mp3',
+        sample_rate: 24000,
+        speed: options.speed ?? 1,
+        volume: Math.max(0, Math.min(1, volume)),
+      },
+    }
+  }
+
+  private async synthesizeBuffer(request: Record<string, unknown>): Promise<Buffer> {
+    const response = await this.transport.post<CosyVoiceResponse>(request)
+    if (!response.data || response.data.code) {
+      throw new Error(`CosyVoice API error: ${response.data?.message || 'unknown error'}`)
+    }
+    const audioUrl = response.data.output?.audio_url
+    if (!audioUrl) throw new Error('CosyVoice response missing audio_url')
+
+    const audio = await fetcher.get<ArrayBuffer>(audioUrl, undefined, { responseType: 'arraybuffer' })
+    const result = Buffer.from(audio.data)
+    if (result.length === 0) throw new Error('CosyVoice completed with zero audio bytes')
+    return result
+  }
+
+  private async synthesizeStream(request: Record<string, unknown>): Promise<Readable> {
+    const upstream = await this.transport.stream(request)
+    const pcm = decodeDashScopeSse(upstream, {
+      engineName: this.name,
+      allowRawBase64: true,
+      decodeAudio: (event) => decodeBase64((event as any)?.payload?.chunk, 'CosyVoice event'),
+    })
+    return this.pcmToMp3Stream(pcm)
+  }
+
+  private pcmToMp3Stream(pcm: Readable): Readable {
+    const ffmpeg = spawn(
+      'ffmpeg',
+      [
+        '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', 'pipe:0',
+        '-f', 'mp3', '-b:a', '96k', 'pipe:1',
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    )
+    pcm.pipe(ffmpeg.stdin!)
+    ffmpeg.stderr?.on('data', (data: Buffer) => logger.debug(`[CosyVoice] ffmpeg: ${data.toString().trim()}`))
+    ffmpeg.once('error', (error) => ffmpeg.stdout?.destroy(error))
+    pcm.once('error', (error) => ffmpeg.stdout?.destroy(error))
+
+    const cleanup = () => {
+      if (!ffmpeg.killed) ffmpeg.kill()
+    }
+    ffmpeg.stdout!.once('close', cleanup)
+    ffmpeg.stdout!.once('error', cleanup)
+    return ffmpeg.stdout!
   }
 }

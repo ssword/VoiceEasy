@@ -11,6 +11,7 @@ import { pickSchema } from '../controllers/pick.controller'
 import { ttsPluginManager } from '../tts/pluginManager'
 import { createTaskStream, generateJson } from '../controllers/stream.controller'
 import { validateJson } from '../schema/generate'
+import { getPublicVoiceOptions } from '../tts/voiceOptions'
 
 const router = Router()
 
@@ -21,7 +22,7 @@ router.get('/engines', async (req, res, next) => {
       allEngines.map(async (engine) => ({
         name: engine.name,
         languages: await engine.getSupportedLanguages(),
-        voices: engine.getVoiceOptions ? await engine.getVoiceOptions() : [],
+        voices: await getPublicVoiceOptions(engine),
         supportsSubtitles: engine.supportsSubtitles !== false,
       }))
     )

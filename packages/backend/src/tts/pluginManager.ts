@@ -27,6 +27,11 @@ export class TtsPluginManager {
   getAllEngines(): TTSEngine[] {
     return Array.from(this.engines.values())
   }
+
+  replaceEngines(engines: TTSEngine[]) {
+    this.engines.clear()
+    engines.forEach((engine) => this.registerEngine(engine))
+  }
 }
 
 export const ttsPluginManager = new TtsPluginManager()

@@ -12,7 +12,7 @@ const api = axios.create({
 export interface EngineInfo {
   name: string
   languages: string[]
-  voices: string[]
+  voices: Voice[]
   supportsSubtitles: boolean
 }
 
@@ -56,6 +56,10 @@ export type Voice = {
   Gender: string
   ContentCategories: string[]
   VoicePersonalities: string[]
+  language?: string
+  age?: string
+  trait?: string
+  scenario?: string
 }
 export interface Task {
   id: string

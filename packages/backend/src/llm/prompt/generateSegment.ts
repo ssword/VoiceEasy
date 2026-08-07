@@ -1,8 +1,8 @@
 const cnTemplate = (voiceList: VoiceConfig[], text: string) => `
 我希望你根据以下声音配置和一段文字内容，为文字配音提供优化建议。任务包括：
 1. 将文字按场景、角色、旁白分割。
-2. 根据角色的性格、对话语气，从声音配置中推荐合适的“Name”。
-3. 为每段推荐合理的“rate”（语速）、“volume”（音量）、“pitch”（音调）参数。
+2. 根据角色的性格、对话语气，从声音配置中推荐合适的"Name"。
+3. 为每段推荐合理的"rate"（语速）、"volume"（音量）、"pitch"（音调）参数。
 4. 请不要遗漏语句以及保证语句的顺序。
 5. 返回结果为 JSON 格式。
 
@@ -33,6 +33,66 @@ ${JSON.stringify(voiceList, null, 2)}
 ### 待处理内容
 ${text}
 `
+
+const cnEnhancedTemplate = (voiceList: VoiceConfig[], text: string) => `
+你是一位专业的语音合成导演。请根据以下声音配置和文字内容，为 Qwen-Audio-TTS 模型提供精细化的配音方案。
+
+## 核心原则
+1. **自然最重要**：配音应该像真实的人在说话，不要过度表演。情感标签和拟声标签是点缀，不是必需品。
+2. **对话优先**：区分旁白和角色对话。旁白应平稳叙事，角色对话应符合人物性格和语境,方言特点。
+3. **克制使用标签**：情感标签（[happy]、[sad]等）和富语言标签（[laughing]、[sighing]等）仅在剧情关键转折点、情绪明显变化时偶尔使用。一段普通的日常对话不应添加任何标签。
+
+## 任务
+1. 将文字按场景、角色、旁白分割。
+2. 首先重点了解背景介绍部分，对于对话的场景，人物的有了解，目前主要场景都是医院的场景。
+2. 根据角色的性格、对话语气，方言特点，从声音配置中推荐合适的 "Name"。
+3. 为每段推荐合理的 "rate"（语速）、"volume"（音量）、"pitch"（音调）参数。
+4. 为每段推荐 "instruction"（指令），用自然语言描述这段的配音风格，使用什么方言。这是控制效果的主要手段。
+5. **仅在情绪变化明显或剧情转折时才在 "text" 中嵌入情感/富语言标签，日常对话不加标签。**
+6. 请不要遗漏语句并保证语句的顺序。
+7. 返回结果为 JSON 格式。
+
+## 声音配置
+${JSON.stringify(voiceList, null, 2)}
+
+## 参数说明
+
+### instruction（指令控制 — 首选控制方式）
+用自然语言描述配音的整体风格、方言或情感倾向。**每段都必须有 instruction**，这是控制配音效果最自然的方式。
+示例：
+- 角色塑造："用温和专业的语气，像一位耐心的医生在询问病情"、"用略显疲惫但礼貌的语气，像一个胃不舒服的病人"
+- 方言控制："用湖北话表达"、"用四川话，语气豪爽"
+- 风格控制："像一个说书人，娓娓道来"、"语速稍慢，每个字说清楚"
+- 情绪微调："语气中带着一丝担忧"、"声音逐渐变得严肃"
+
+### 情感标签（可选，极少使用）
+仅在情绪发生显著变化时偶尔使用。日常对话不要用。
+- [happy] 高兴、[sad] 悲伤、[excited] 激动、[angry] 愤怒、[surprised] 惊讶、[fearful] 恐惧
+- [whispers] 悄悄话、[serious] 严肃、[calm] 平静
+
+### 富语言标签（可选，极少使用）
+仅在需要拟声效果的戏剧性时刻偶尔使用。
+- [laughing] 笑声、[sighing] 叹息、[gasp] 倒吸气、[cough] 咳嗽
+
+### 最终返回JSON格式
+{
+  "segments": [
+    {
+      "name": "声音配置中的 Name 字段",
+      "charactor": "角色名或narration",
+      "rate": "语速，如 +0%",
+      "volume": "音量，如 +0%",
+      "pitch": "音调，如 +0Hz",
+      "instruction": "自然语言指令（必填！如'用温和专业的语气，像一位耐心的医生，用湖北话表达'）",
+      "text": "文本段落（大多数情况下就是原文，不加任何标签。仅在极少数戏剧性时刻才加标签）"
+    }
+  ]
+}
+
+## 待处理内容
+${text}
+`
+
 const engTemplate = (voiceList: VoiceConfig[], text: string) => `
 I hope you can provide optimization suggestions for text dubbing based on the following sound configuration and a paragraph of text content. Tasks include:
 1. Divide the text by scene, role, and narration.
@@ -76,18 +136,20 @@ export function getPrompt(
 ) {
   // For non-default engines, voices don't have language prefixes — use all voices.
   const isDefaultEngine = !engine || engine === 'edge-tts'
+  // Qwen-Audio-TTS supports instruction control, emotion tags, rich language tags, and dialects
+  const isQwenAudio = engine === 'qwen-audio-tts'
+  const filteredVoices = isDefaultEngine
+    ? voiceList.filter((voice) => voice.Name.startsWith(lang === 'eng' ? 'en' : 'zh'))
+    : voiceList
+
   switch (lang) {
     case 'zh':
     case 'cn':
-      return cnTemplate(
-        isDefaultEngine ? voiceList.filter((voice) => voice.Name.startsWith('zh')) : voiceList,
-        text
-      )
+      return isQwenAudio
+        ? cnEnhancedTemplate(filteredVoices, text)
+        : cnTemplate(filteredVoices, text)
     case 'eng':
-      return engTemplate(
-        isDefaultEngine ? voiceList.filter((voice) => voice.Name.startsWith('en')) : voiceList,
-        text
-      )
+      return engTemplate(filteredVoices, text)
     default:
       throw new Error(`Unsupported language: ${lang}`)
   }

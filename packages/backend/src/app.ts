@@ -6,6 +6,7 @@ import { setupRoutes } from './routes'
 import { registerEngines } from './tts/engines'
 import { ttsPluginManager } from './tts/pluginManager'
 import { errorHandler } from './middleware/error.middleware'
+import { TTSEngine } from './tts/types'
 
 // 应用配置接口
 interface AppConfig {
@@ -14,6 +15,7 @@ interface AppConfig {
   rateLimitWindow: number
   audioDir: string
   publicDir: string
+  engines?: TTSEngine[]
 }
 
 // 创建应用工厂函数
@@ -39,7 +41,8 @@ export function createApp(config: AppConfig): Application {
   // 配置静态文件服务
   configureStaticFiles(app, { audioDir, publicDir })
 
-  registerEngines()
+  if (config.engines) ttsPluginManager.replaceEngines(config.engines)
+  else registerEngines()
   app.use(errorHandler)
   return app
 }

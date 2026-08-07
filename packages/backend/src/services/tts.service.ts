@@ -95,7 +95,9 @@ async function generateWithLLM(
     const engineInstance = ttsPluginManager.getEngine(engine)
     if (engineInstance?.getVoiceOptions) {
       const engineVoices = await engineInstance.getVoiceOptions()
-      effectiveVoiceList = engineVoices.map((name) => ({ Name: name } as VoiceConfig))
+      effectiveVoiceList = engineVoices.map((voice) =>
+        typeof voice === 'string' ? ({ Name: voice } as VoiceConfig) : (voice as VoiceConfig)
+      )
     }
   }
 
@@ -118,7 +120,9 @@ async function generateWithLLM(
         'LLM response is not an array, please switch to Edge TTS mode or use another model'
       )
     }
-    const result = await buildSegmentList(segment, formatLlmSegments(llmSegments), task)
+    const formattedSegments = formatLlmSegments(llmSegments)
+    logger.info(`AI 推荐分段结果 (${engine}):\n${JSON.stringify(formattedSegments, null, 2)}`)
+    const result = await buildSegmentList(segment, formattedSegments, task)
     task?.updateProgress?.(task.id, 100)
     return result
   } else {
@@ -139,40 +143,51 @@ async function generateWithLLM(
           'LLM response is not an array, please switch to Edge TTS mode or use another model'
         )
       }
+      const formattedSegments = formatLlmSegments(llmSegments)
+      logger.info(
+        `AI 推荐分段结果[${count}/${segments.length}] (${engine}):\n${JSON.stringify(formattedSegments, null, 2)}`
+      )
       const result = await buildSegmentList(
         { ...segment, id: `[segments:${count}]${segment.id}` },
-        formatLlmSegments(llmSegments),
+        formattedSegments,
         task
       )
       task?.updateProgress?.(task.id, getProgress())
       finalSegments.push(result)
     }
-    return await buildFinal(finalSegments, id)
+    return await buildFinal(finalSegments, id, engine)
   }
 }
-const buildFinal = async (finalSegments: TTSResult[], id: string) => {
-  const subtitleFiles: SubtitleFiles = await Promise.all(
-    finalSegments.map((file) => {
-      const base = path.basename(file.audio)
-      const jsonPath = path.resolve(AUDIO_DIR, base.replace('.mp3', ''), 'all_splits.mp3.json')
-      return readJson<SubtitleFile>(jsonPath)
-    })
-  )
+const buildFinal = async (finalSegments: TTSResult[], id: string, engine?: string) => {
+  // Check if engine supports subtitles before trying to merge
+  const engInstance = engine ? ttsPluginManager.getEngine(engine) : undefined
+  const supportsSrt = engInstance?.supportsSubtitles !== false
 
-  const mergedJson = mergeSubtitleFiles(subtitleFiles)
-  const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
-  await ensureDir(finalDir)
-  const finalJson = path.resolve(finalDir, '[merged]all_splits.mp3.json')
-  await fs.writeFile(finalJson, JSON.stringify(mergedJson, null, 2))
-  await generateSrt(finalJson, path.resolve(AUDIO_DIR, id.replace('.mp3', '.srt')))
+  if (supportsSrt) {
+    const subtitleFiles: SubtitleFiles = await Promise.all(
+      finalSegments.map((file) => {
+        const base = path.basename(file.audio)
+        const jsonPath = path.resolve(AUDIO_DIR, base.replace('.mp3', ''), 'all_splits.mp3.json')
+        return readJson<SubtitleFile>(jsonPath)
+      })
+    )
+    const mergedJson = mergeSubtitleFiles(subtitleFiles)
+    const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
+    await ensureDir(finalDir)
+    const finalJson = path.resolve(finalDir, '[merged]all_splits.mp3.json')
+    await fs.writeFile(finalJson, JSON.stringify(mergedJson, null, 2))
+    await generateSrt(finalJson, path.resolve(AUDIO_DIR, id.replace('.mp3', '.srt')))
+  }
   const fileList = finalSegments.map((segment) =>
     path.resolve(AUDIO_DIR, path.parse(segment.audio).base)
   )
+  const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
+  await ensureDir(finalDir)
   const outputFile = path.resolve(AUDIO_DIR, id)
   await concatDirAudio({ inputDir: finalDir, fileList, outputFile })
   return {
     audio: `${STATIC_DOMAIN}/${id}`,
-    srt: `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}`,
+    srt: supportsSrt ? `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}` : '',
   }
 }
 /**
@@ -205,7 +220,7 @@ async function buildSegment(
   dir: string = ''
 ): Promise<TTSResult> {
   const { id, text } = segment
-  const { pitch, voice, rate, volume, engine } = params
+  const { pitch, voice, rate, volume, engine, instruction } = params
   const output = path.resolve(AUDIO_DIR, dir, id)
   const result = await generateSingleVoice({
     text,
@@ -215,11 +230,15 @@ async function buildSegment(
     volume,
     output,
     engine,
+    instruction,
   })
   logger.info('Generated single segment:', result)
-  setTimeout(() => {
-    handleSrt(output, false)
-  }, 200)
+  const engineInstance = ttsPluginManager.getEngine(engine || DEFAULT_ENGINE)
+  if (engineInstance?.supportsSubtitles !== false) {
+    setTimeout(() => {
+      handleSrt(output, false)
+    }, 200)
+  }
   return {
     audio: `${STATIC_DOMAIN}/${path.join(dir, id)}`,
     srt: `${STATIC_DOMAIN}/${path.join(dir, id.replace('.mp3', '.srt'))}`,
@@ -253,7 +272,7 @@ async function buildSegmentList(
     return Number((((handledLength / length) * 100) / (id.includes('segment') ? 2 : 1)).toFixed(2))
   }
   const tasks = segments.map((segment, index) => async () => {
-    const { text, pitch, voice, rate, volume, engine } = segment
+    const { text, pitch, voice, rate, volume, engine, instruction } = segment
     const output = path.resolve(tmpDirPath, `${index + 1}_splits.mp3`)
     const cacheKey = taskManager.generateTaskId({ text, pitch, voice, rate, volume })
     const cache = await audioCacheInstance.getAudio(cacheKey)
@@ -262,7 +281,7 @@ async function buildSegmentList(
       fileList.push(cache.audio)
       return cache
     }
-    const result = await generateSingleVoice({ text, pitch, voice, rate, volume, output, engine })
+    const result = await generateSingleVoice({ text, pitch, voice, rate, volume, output, engine, instruction })
     logger.debug(`Cache miss and generate audio: ${result.audio}, ${result.srt}`)
     fileList.push(result.audio)
     handledLength++
@@ -280,10 +299,15 @@ async function buildSegmentList(
   const outputFile = path.resolve(AUDIO_DIR, id)
   logger.debug(`Concatenating audio files from ${tmpDirPath} to ${outputFile}`)
   await concatDirAudio({ inputDir: tmpDirPath, fileList, outputFile })
-  await concatDirSrt({ inputDir: tmpDirPath, fileList, outputFile })
-  logger.debug(
-    `Concatenating SRT files from ${tmpDirPath} to ${outputFile.replace('.mp3', '.srt')}`
-  )
+  // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
+  const firstEngine = segments[0]?.engine || DEFAULT_ENGINE
+  const engInstance = ttsPluginManager.getEngine(firstEngine)
+  if (engInstance?.supportsSubtitles !== false) {
+    await concatDirSrt({ inputDir: tmpDirPath, fileList, outputFile })
+    logger.debug(
+      `Concatenating SRT files from ${tmpDirPath} to ${outputFile.replace('.mp3', '.srt')}`
+    )
+  }
 
   return {
     audio: `${STATIC_DOMAIN}/${id}`,

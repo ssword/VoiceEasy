@@ -52,7 +52,9 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
     const engineInstance = ttsPluginManager.getEngine(engine)
     if (engineInstance?.getVoiceOptions) {
       const engineVoices = await engineInstance.getVoiceOptions()
-      effectiveVoiceList = engineVoices.map((name) => ({ Name: name } as VoiceConfig))
+      effectiveVoiceList = engineVoices.map((voice) =>
+        typeof voice === 'string' ? ({ Name: voice } as VoiceConfig) : (voice as VoiceConfig)
+      )
     }
   }
 
@@ -85,9 +87,9 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   }
 
   if (useLLM) {
-    generateWithLLMStream(task)
+    await generateWithLLMStream(task)
   } else {
-    generateWithoutLLMStream({ ...params, output: segment.id, engine }, task)
+    await generateWithoutLLMStream({ ...params, output: segment.id, engine }, task)
   }
 }
 export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[], task: Task) {
@@ -97,7 +99,7 @@ export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[]
   logger.info(`generateTTSStreamJson splitText length: ${formatedBody.length} `)
   const buildSegments = segments.map((segment) => ({ ...segment, output }))
   logger.info('buildSegments:', buildSegments)
-  buildSegmentList(buildSegments, task)
+  await buildSegmentList(buildSegments, task)
 }
 
 /**
@@ -125,7 +127,9 @@ async function generateWithLLMStream(task: Task) {
         'LLM response is not an array, please switch to Edge TTS mode or use another model'
       )
     }
-    buildSegmentList(formatLlmSegments(llmSegments), task)
+    const formattedSegments = formatLlmSegments(llmSegments)
+    logger.info(`AI 推荐分段结果 (${engine}):\n${JSON.stringify(formattedSegments, null, 2)}`)
+    await buildSegmentList(formattedSegments, task)
   } else {
     const output = resolve(AUDIO_DIR, id)
     let count = 0
@@ -149,7 +153,11 @@ async function generateWithLLMStream(task: Task) {
           'LLM response is not an array, please switch to Edge TTS mode or use another model'
         )
       }
-      for (let segment of formatLlmSegments(llmSegments)) {
+      const llmFormatted = formatLlmSegments(llmSegments)
+      logger.info(
+        `AI 推荐分段结果[${count}/${segments.length}] (${engine}):\n${JSON.stringify(llmFormatted, null, 2)}`
+      )
+      for (let segment of llmFormatted) {
         const stream = (await generateSingleVoiceStream({
           ...segment,
           output,
@@ -200,10 +208,10 @@ async function generateWithoutLLMStream(params: TTSParams, task: Task) {
   const { length, segments } = splitText(text)
   logger.info(`splitText length: ${length} `)
   if (length <= 1) {
-    buildSegment(params, task)
+    await buildSegment(params, task)
   } else {
     const buildSegments = segments.map((segment) => ({ ...params, text: segment }))
-    buildSegmentList(buildSegments, task)
+    await buildSegmentList(buildSegments, task)
   }
 }
 
@@ -227,13 +235,19 @@ async function buildSegment(params: TTSParams, task: Task, dir: string = '') {
       'Access-Control-Expose-Headers-generate-tts-id': task.id,
     },
     fileName: segment.id,
-    onError: (err) => `Custom error: ${err.message}`,
+    onError: (err) => {
+      taskManager.failTask(task.id, { message: err.message })
+      return `TTS generation failed: ${err.message}`
+    },
     onEnd: () => {
-      task?.endTask?.(task.id)
+      if (taskManager.isTaskPending(task.id)) task?.endTask?.(task.id)
       logger.info(`Streaming ${task.id} finished`)
-      setTimeout(() => {
-        handleSrt(output)
-      }, 200)
+      const engine = ttsPluginManager.getEngine(params.engine || DEFAULT_ENGINE)
+      if (engine?.supportsSubtitles !== false) {
+        setTimeout(() => {
+          handleSrt(output)
+        }, 200)
+      }
     },
   })
 }
@@ -276,6 +290,10 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
 
   const progress = () => Number(((completedSegments / totalSegments) * 100).toFixed(2))
   const outputStream = new PassThrough()
+  const supportsSubtitles = segments.every((item) => {
+    const engine = ttsPluginManager.getEngine(item.engine || DEFAULT_ENGINE)
+    return engine?.supportsSubtitles !== false
+  })
 
   streamToResponse(res, outputStream, {
     headers: {
@@ -283,17 +301,22 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
       'x-generate-tts-type': 'stream',
       'Access-Control-Expose-Headers-generate-tts-id': task.id,
     },
-    onError: (err) => `Custom error: ${err.message}`,
+    onError: (err) => {
+      taskManager.failTask(task.id, { message: err.message })
+      return `TTS generation failed: ${err.message}`
+    },
     fileName: segment.id,
     onEnd: () => {
-      task?.endTask?.(task.id)
+      if (taskManager.isTaskPending(task.id)) task?.endTask?.(task.id)
       logger.info(`Streaming ${task.id} finished`)
-      setTimeout(() => {
-        handleSrt(output)
-      }, 200)
+      if (supportsSubtitles) {
+        setTimeout(() => {
+          handleSrt(output)
+        }, 200)
+      }
     },
     onClose: () => {
-      task?.endTask?.(task.id)
+      if (taskManager.isTaskPending(task.id)) task?.endTask?.(task.id)
       logger.info(`Streaming ${task.id} closed`)
     },
   })
