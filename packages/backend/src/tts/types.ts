@@ -18,6 +18,9 @@ export interface TtsOptions {
 
 export interface TTSEngine {
   name: string // 引擎名称
+  cacheNamespace?: string // Engine/model revision used to isolate synthesized audio caches
+  outputFormat?: string
+  sampleRate?: number
   synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> // 合成语音，返回音频 Buffer 或者 Readable
   getSupportedLanguages(): Promise<string[]> // 支持的语言列表
   getVoiceOptions?(): Promise<(string | Record<string, unknown>)[]> // 可选：支持的音色列表

@@ -12,6 +12,7 @@ export const edgeSchema = z.object({
   volume: z.string().optional(),
   rate: z.string().optional(),
   useLLM: z.boolean().default(false),
+  instruction: z.string().optional(),
   engine: z
     .string()
     .optional()
@@ -44,6 +45,7 @@ const dataItemSchema = z.object({
   rate: z.string().default(''),
   pitch: z.string().default(''),
   volume: z.string().default(''),
+  instruction: z.string().optional(),
   engine: z
     .string()
     .optional()

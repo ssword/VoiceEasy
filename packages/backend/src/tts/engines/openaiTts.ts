@@ -6,9 +6,12 @@ type OpenAIVoice = (typeof OPENAI_VOICES)[number]
 
 const RESPONSE_FORMATS = ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] as const
 type ResponseFormat = (typeof RESPONSE_FORMATS)[number]
+const OPENAI_TTS_MODEL = 'gpt-4o-mini-tts'
 
 export class OpenAITtsEngine implements TTSEngine {
   name = 'openai-tts'
+  readonly cacheNamespace = `openai-tts:${OPENAI_TTS_MODEL}`
+  readonly outputFormat = 'mp3'
   private apiKey: string
 
   constructor(apiKey: string) {
@@ -45,7 +48,7 @@ export class OpenAITtsEngine implements TTSEngine {
       const response = await fetcher.post(
         'https://api.openai.com/v1/audio/speech',
         {
-          model: 'gpt-4o-mini-tts',
+          model: OPENAI_TTS_MODEL,
           input: text,
           voice,
           speed,

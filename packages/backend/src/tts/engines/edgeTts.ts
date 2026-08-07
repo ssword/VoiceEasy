@@ -5,6 +5,9 @@ import path from 'path'
 
 export class EdgeTtsEngine implements TTSEngine {
   name = 'edge-tts'
+  readonly cacheNamespace = 'edge-tts:audio-24khz-96kbitrate-mono-mp3'
+  readonly outputFormat = 'mp3'
+  readonly sampleRate = 24000
 
   async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
     const {

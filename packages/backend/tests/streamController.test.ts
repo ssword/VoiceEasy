@@ -39,7 +39,7 @@ describe('createTaskStream', () => {
 
     expect(taskManager.failTask).toHaveBeenCalledWith('task-test', {
       message: failure.message,
-    })
+    }, expect.objectContaining({ id: 'task-test' }))
     expect(next).toHaveBeenCalledWith(failure)
   })
 })

@@ -13,6 +13,8 @@ interface ExtendedTtsOptions extends TtsOptions {
 
 export class KokoroTtsEngine implements TTSEngine {
   name = 'kokoro-tts'
+  readonly cacheNamespace = 'kokoro-tts:kokoro'
+  readonly outputFormat = 'mp3'
   private baseUrl: string
   private initialized = false
 

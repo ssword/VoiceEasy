@@ -24,7 +24,7 @@ import audioCacheInstance from './audioCache.service'
 import { mergeSubtitleFiles, SubtitleFile, SubtitleFiles } from '../utils/subtitle'
 import taskManager, { Task } from '../utils/taskManager'
 import { Readable, PassThrough } from 'stream'
-import { createWriteStream } from 'fs'
+import { createSynthesisCacheKey } from './synthesisCache'
 
 // 错误消息枚举
 enum ErrorMessages {
@@ -64,12 +64,16 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   task!.context!.engine = engine
   const { res } = task.context as Required<NonNullable<Task['context']>>
   if (!validateLangAndVoice(lang, voice, res)) {
-    task?.endTask?.(task.id)
+    taskManager.failTask(
+      task.id,
+      { message: ErrorMessages.ENG_MODEL_INVALID_TEXT, code: 400 },
+      task
+    )
     return
   }
 
   // 检查缓存, 如果有缓存则直接返回
-  const cacheKey = taskManager.generateTaskId({ text, pitch, voice, rate, volume })
+  const cacheKey = createSynthesisCacheKey(params)
   const cache = await audioCacheInstance.getAudio(cacheKey)
   if (cache) {
     const data = {
@@ -106,7 +110,7 @@ export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[]
  * 使用 LLM 生成 TTS
  */
 async function generateWithLLMStream(task: Task) {
-  const { segment, voiceList, lang, res, engine } = task.context as Required<NonNullable<Task['context']>>
+  const { segment, voiceList, lang, engine } = task.context as Required<NonNullable<Task['context']>>
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
   const formatLlmSegments = (llmSegments: any) =>
@@ -137,10 +141,18 @@ async function generateWithLLMStream(task: Task) {
     const getProgress = () => {
       return Number(((count / segments.length) * 100).toFixed(2))
     }
-    const localStream = createWriteStream(output)
     const outputStream = new PassThrough()
-    outputStream.pipe(res)
-    outputStream.pipe(localStream)
+    streamTaskToResponse(task, outputStream, {
+      fileName: segment.id,
+      onCompleted: () => {
+        const engineInstance = ttsPluginManager.getEngine(engine || DEFAULT_ENGINE)
+        if (engineInstance?.supportsSubtitles !== false) {
+          setTimeout(() => {
+            handleSrt(output)
+          }, 200)
+        }
+      },
+    })
 
     for (let seg of segments) {
       count++
@@ -164,16 +176,14 @@ async function generateWithLLMStream(task: Task) {
           outputType: 'stream',
         })) as Readable
         stream.pipe(outputStream, { end: false })
-        await new Promise((resolve) => {
-          stream.on('end', resolve)
+        await new Promise<void>((resolve, reject) => {
+          stream.once('end', resolve)
+          stream.once('error', reject)
         })
       }
       logger.info(`Progress: ${getProgress()}%`)
     }
     outputStream.end()
-    setTimeout(() => {
-      handleSrt(output)
-    }, 200)
   }
 }
 const buildFinal = async (finalSegments: TTSResult[], id: string) => {
@@ -226,22 +236,9 @@ async function buildSegment(params: TTSParams, task: Task, dir: string = '') {
     output,
     outputType: 'stream',
   })) as Readable
-  const { res } = task.context as Required<NonNullable<Task['context']>>
-
-  streamToResponse(res, stream, {
-    headers: {
-      'content-type': 'application/octet-stream',
-      'x-generate-tts-type': 'stream',
-      'Access-Control-Expose-Headers-generate-tts-id': task.id,
-    },
+  streamTaskToResponse(task, stream, {
     fileName: segment.id,
-    onError: (err) => {
-      taskManager.failTask(task.id, { message: err.message })
-      return `TTS generation failed: ${err.message}`
-    },
-    onEnd: () => {
-      if (taskManager.isTaskPending(task.id)) task?.endTask?.(task.id)
-      logger.info(`Streaming ${task.id} finished`)
+    onCompleted: () => {
       const engine = ttsPluginManager.getEngine(params.engine || DEFAULT_ENGINE)
       if (engine?.supportsSubtitles !== false) {
         setTimeout(() => {
@@ -284,7 +281,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   const output = path.resolve(AUDIO_DIR, outputId)
   let completedSegments = 0
   if (!totalSegments) {
-    task?.endTask?.(task.id)
+    taskManager.failTask(task.id, { message: 'No segments provided', code: 400 }, task)
     return void res.status(400).end('No segments provided')
   }
 
@@ -295,36 +292,20 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
     return engine?.supportsSubtitles !== false
   })
 
-  streamToResponse(res, outputStream, {
-    headers: {
-      'content-type': 'application/octet-stream',
-      'x-generate-tts-type': 'stream',
-      'Access-Control-Expose-Headers-generate-tts-id': task.id,
-    },
-    onError: (err) => {
-      taskManager.failTask(task.id, { message: err.message })
-      return `TTS generation failed: ${err.message}`
-    },
+  streamTaskToResponse(task, outputStream, {
     fileName: segment.id,
-    onEnd: () => {
-      if (taskManager.isTaskPending(task.id)) task?.endTask?.(task.id)
-      logger.info(`Streaming ${task.id} finished`)
+    onCompleted: () => {
       if (supportsSubtitles) {
         setTimeout(() => {
           handleSrt(output)
         }, 200)
       }
     },
-    onClose: () => {
-      if (taskManager.isTaskPending(task.id)) task?.endTask?.(task.id)
-      logger.info(`Streaming ${task.id} closed`)
-    },
   })
 
   const processSegment = async (index: number, maxRetries = 3): Promise<void> => {
     if (index >= totalSegments) {
       outputStream.end()
-      task?.endTask?.(task.id)
       return
     }
 
@@ -352,8 +333,11 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
     try {
       // TODO: Concurrency of streaming flow
       const audioStream = await generateWithRetry()
-      await audioStream.pipe(outputStream, { end: false })
-      await new Promise((resolve) => audioStream.on('end', resolve))
+      audioStream.pipe(outputStream, { end: false })
+      await new Promise<void>((resolve, reject) => {
+        audioStream.once('end', resolve)
+        audioStream.once('error', reject)
+      })
       completedSegments++
       logger.info(`processing text:\n ${segment.text.slice(0, 10)}...`)
       logger.info(`Segment ${index + 1}/${totalSegments} completed. Progress: ${progress()}%`)
@@ -371,6 +355,36 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
     logger.error(`Audio processing aborted: ${(err as Error).message}`)
     !res.headersSent && res.status(500).end('Internal server error')
   }
+}
+
+function streamTaskToResponse(
+  task: Task,
+  input: Readable,
+  options: { fileName: string; onCompleted?: () => void }
+) {
+  const { res } = task.context as Required<NonNullable<Task['context']>>
+  streamToResponse(res, input, {
+    headers: {
+      'content-type': 'application/octet-stream',
+      'x-generate-tts-type': 'stream',
+      'x-generate-tts-id': task.id,
+      'Access-Control-Expose-Headers': 'x-generate-tts-type, x-generate-tts-id',
+    },
+    fileName: options.fileName,
+    onError: (error) => {
+      taskManager.failTask(task.id, { message: error.message }, task)
+      return `TTS generation failed: ${error.message}`
+    },
+    onEnd: () => {
+      taskManager.finishTask(task.id, task)
+      logger.info(`Streaming ${task.id} finished`)
+      options.onCompleted?.()
+    },
+    onClose: () => {
+      taskManager.cancelTask(task.id, 'Client disconnected', task)
+      logger.info(`Streaming ${task.id} cancelled after client disconnect`)
+    },
+  })
 }
 
 /**

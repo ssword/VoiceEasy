@@ -14,8 +14,9 @@ import { EdgeSchema } from '../schema/generate'
 import { MapLimitController } from '../controllers/concurrency.controller'
 import audioCacheInstance from './audioCache.service'
 import { mergeSubtitleFiles, SubtitleFile, SubtitleFiles } from '../utils/subtitle'
-import taskManager, { Task } from '../utils/taskManager'
+import { Task } from '../utils/taskManager'
 import { handleSrt } from './tts.stream.service'
+import { createSynthesisCacheKey } from './synthesisCache'
 
 // 错误消息枚举
 export enum ErrorMessages {
@@ -32,9 +33,9 @@ export enum ErrorMessages {
  * 生成文本转语音 (TTS) 的音频和字幕
  */
 export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Promise<TTSResult> {
-  const { text, pitch, voice, rate, volume, useLLM, engine } = params
+  const { text, pitch, voice, rate, volume, useLLM, engine, instruction } = params
   // 检查缓存
-  const cacheKey = taskManager.generateTaskId({ text, pitch, voice, rate, volume })
+  const cacheKey = createSynthesisCacheKey(params)
   const cache = await audioCacheInstance.getAudio(cacheKey)
   if (cache) {
     logger.info(`Cache hit: ${voice} ${text.slice(0, 10)}`)
@@ -60,6 +61,7 @@ export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Pr
         volume,
         output: segment.id,
         engine,
+        instruction,
       },
       task
     )
@@ -274,7 +276,7 @@ async function buildSegmentList(
   const tasks = segments.map((segment, index) => async () => {
     const { text, pitch, voice, rate, volume, engine, instruction } = segment
     const output = path.resolve(tmpDirPath, `${index + 1}_splits.mp3`)
-    const cacheKey = taskManager.generateTaskId({ text, pitch, voice, rate, volume })
+    const cacheKey = createSynthesisCacheKey(segment)
     const cache = await audioCacheInstance.getAudio(cacheKey)
     if (cache) {
       logger.info(`Cache hit[segments]: ${voice} ${text.slice(0, 10)}`)
@@ -286,7 +288,7 @@ async function buildSegmentList(
     fileList.push(result.audio)
     handledLength++
     task?.updateProgress?.(task.id, getProgress())
-    const params = { text, pitch, voice, rate, volume }
+    const params = { text, pitch, voice, rate, volume, engine, instruction }
     await audioCacheInstance.setAudio(cacheKey, { ...params, ...result })
     return result
   })

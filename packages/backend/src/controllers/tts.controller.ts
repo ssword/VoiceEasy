@@ -4,33 +4,14 @@ import { logger } from '../utils/logger'
 import path from 'path'
 import fs from 'fs/promises'
 import { ALLOWED_EXTENSIONS, AUDIO_DIR, DEFAULT_ENGINE } from '../config'
-import { EdgeSchema } from '../schema/generate'
 import taskManager from '../utils/taskManager'
 import { ttsPluginManager } from '../tts/pluginManager'
 import { getPublicVoiceOptions } from '../tts/voiceOptions'
-function formatBody({ text, pitch, voice, volume, rate, useLLM, engine }: EdgeSchema) {
-  const positivePercent = (value: string | undefined) => {
-    if (value === '0%' || value === '0' || value === undefined) return '+0%'
-    return value
-  }
-  const positiveHz = (value: string | undefined) => {
-    if (value === '0Hz' || value === '0' || value === undefined) return '+0Hz'
-    return value
-  }
-  return {
-    text: text.trim(),
-    pitch: positiveHz(pitch),
-    voice: positivePercent(voice),
-    rate: positivePercent(rate),
-    volume: positivePercent(volume),
-    useLLM,
-    engine,
-  }
-}
+import { normalizeTtsRequest } from '../services/ttsRequest'
 export async function createTask(req: Request, res: Response, next: NextFunction) {
   try {
     logger.debug('Generating audio with body:', req.body)
-    const formattedBody = formatBody(req.body)
+    const formattedBody = normalizeTtsRequest(req.body)
     const task = taskManager.createTask(formattedBody)
     logger.info(`Generated task ID: ${task.id}`)
 
@@ -41,14 +22,14 @@ export async function createTask(req: Request, res: Response, next: NextFunction
           file: path.parse(result.audio).base,
           srt: path.parse(result.srt).base,
         }
-        taskManager.updateTask(task.id, { result: data })
+        taskManager.updateTask(task.id, { result: data }, task)
         logger.info(`Updated task ID: ${task.id} with result`, result)
       })
       .catch((err) => {
         const data = {
           message: (err as Error).message,
         }
-        taskManager.failTask(task.id, data)
+        taskManager.failTask(task.id, data, task)
       })
     const data = {
       success: true,
@@ -99,7 +80,7 @@ export async function getTaskStats(_req: Request, res: Response, next: NextFunct
 export async function generateAudio(req: Request, res: Response, next: NextFunction) {
   try {
     logger.debug('Generating audio with body:', req.body)
-    const formattedBody = formatBody(req.body)
+    const formattedBody = normalizeTtsRequest(req.body)
     let result = await generateTTS(formattedBody)
     const responseResult = {
       success: true,

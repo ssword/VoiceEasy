@@ -123,7 +123,7 @@ export function streamToResponse(
   })
 
   const handleDisconnect = () => {
-    if (!isClientDisconnected) {
+    if (!res.writableFinished && !isClientDisconnected) {
       isClientDisconnected = true
       logger.info('Client disconnected')
       // 清理流
@@ -154,6 +154,7 @@ export function streamToResponse(
   outputStream.on('error', (err: Error) => {
     if (isClientDisconnected) return
     logger.error('Output stream error:', err.message)
+    onError(err)
     res.status(500).end('Internal server error')
   })
 

@@ -11,10 +11,22 @@ interface Options {
 interface TaskManagerOptions {
   length?: number
 }
+export type TaskStatus = 'pending' | 'completed' | 'failed' | 'cancelled'
+
+export class TaskConflictError extends Error {
+  readonly statusCode = 409
+  readonly errorCode = 'TASK_ALREADY_PENDING'
+
+  constructor(readonly taskId: string) {
+    super(`Task ${taskId} is already pending`)
+    this.name = 'TaskConflictError'
+  }
+}
+
 export interface Task {
   id: string
   fields: any
-  status: string
+  status: TaskStatus
   progress: number
   message: string
   code?: string | number
@@ -22,7 +34,7 @@ export interface Task {
   createdAt: Date
   updatedAt?: Date
   updateProgress?: (taskId: string, progress: number) => Task | undefined
-  endTask?: (taskId: string) => void
+  endTask?: (taskId?: string) => Task
   context?: {
     req?: Request
     res?: Response
@@ -68,12 +80,12 @@ class TaskManager {
   createTask(fields: any, options?: Options): Task {
     const taskId = this.generateTaskId(fields, options)
     if (this.isTaskPending(taskId)) {
-      throw new Error(`task: ${taskId} already exists!`)
+      throw new TaskConflictError(taskId)
     }
     if (this.getPendingTasks()?.length >= this.MAX_TASKS) {
       throw new Error(`Cannot create more than ${this.MAX_TASKS} tasks!`)
     }
-    const task = {
+    const task: Task = {
       id: taskId,
       fields,
       status: 'pending',
@@ -81,21 +93,19 @@ class TaskManager {
       message: '',
       result: null,
       createdAt: new Date(),
-      updateProgress: this.updateProgress.bind(this),
-      endTask: this.finishTask.bind(this),
+      updateProgress: (_taskId, progress) => this.updateProgress(taskId, progress, task),
+      endTask: () => this.finishTask(taskId, task),
     }
     this.tasks.set(taskId, task)
     return task
   }
 
-  finishTask(taskId: string) {
-    const task = this.tasks.get(taskId)
-    if (!task) throw new Error(`Cannot find task: ${taskId}`)
-    task.status = 'completed'
-    task.progress = 100
-    task.updatedAt = new Date()
-    this.tasks.set(taskId, task)
-    logger.info(`Task ${taskId} completed`)
+  finishTask(taskId: string, expectedTask?: Task) {
+    const { task, transitioned } = this.transitionPendingTask(taskId, expectedTask, (current) => {
+      current.status = 'completed'
+      current.progress = 100
+    })
+    if (transitioned) logger.info(`Task ${taskId} completed`)
     return task
   }
   isTaskPending(taskId: string) {
@@ -104,44 +114,42 @@ class TaskManager {
   getTask(taskId: string) {
     return this.tasks.get(taskId) || null
   }
-  failTask(taskId: string, { code, message }: { code?: number; message: string }) {
-    const findTask = this.getTask(taskId)
-    if (!findTask) {
-      throw new Error(`Cannot find task: ${taskId}`)
-    }
-    findTask.status = 'failed'
-    findTask.message = message
-    findTask.code = code
-    findTask.updatedAt = new Date()
-    this.tasks.set(taskId, findTask)
-    return true
+  failTask(
+    taskId: string,
+    { code, message }: { code?: number; message: string },
+    expectedTask?: Task
+  ) {
+    return this.transitionPendingTask(taskId, expectedTask, (task) => {
+      task.status = 'failed'
+      task.message = message
+      task.code = code
+    }).task
   }
-  updateProgress(taskId: string, progress: number): Task | undefined {
-    const findTask = this.getTask(taskId)
-    if (!findTask) return
-    findTask.progress = progress
-    findTask.updatedAt = new Date()
-    this.tasks.set(taskId, findTask)
-    return findTask
+  cancelTask(taskId: string, message = 'Client disconnected', expectedTask?: Task) {
+    return this.transitionPendingTask(taskId, expectedTask, (task) => {
+      task.status = 'cancelled'
+      task.message = message
+    }).task
+  }
+  updateProgress(taskId: string, progress: number, expectedTask?: Task): Task | undefined {
+    return this.transitionPendingTask(taskId, expectedTask, (task) => {
+      task.progress = progress
+    }).task
   }
   updateTask(
     taskId: string,
     {
-      status = 'completed',
+      status = 'completed' as TaskStatus,
       progress = 100,
       result,
-    }: { status?: string; progress?: number; result: any }
+    }: { status?: TaskStatus; progress?: number; result: any },
+    expectedTask?: Task
   ) {
-    const findTask = this.getTask(taskId)
-    if (!findTask) {
-      throw new Error(`Cannot find task: ${taskId}`)
-    }
-    findTask.status = status
-    findTask.updatedAt = new Date()
-    findTask.progress = progress
-    findTask.result = result
-    this.tasks.set(taskId, findTask)
-    return findTask
+    return this.transitionPendingTask(taskId, expectedTask, (task) => {
+      task.status = status
+      task.progress = progress
+      task.result = result
+    }).task
   }
   getTaskLength() {
     return this.tasks.size
@@ -160,10 +168,35 @@ class TaskManager {
       totalTasks: this.getTaskLength(),
       completedTasks: tasks.filter((task) => task.status === 'completed').length,
       failedTasks: tasks.filter((task) => task.status === 'failed').length,
+      cancelledTasks: tasks.filter((task) => task.status === 'cancelled').length,
       pendingTasks: tasks.filter((task) => task.status === 'pending').length,
       memory,
     }
     return stats
+  }
+
+  private requireTask(taskId: string): Task {
+    const task = this.getTask(taskId)
+    if (!task) throw new Error(`Cannot find task: ${taskId}`)
+    return task
+  }
+
+  private transitionPendingTask(
+    taskId: string,
+    expectedTask: Task | undefined,
+    transition: (task: Task) => void
+  ): { task: Task; transitioned: boolean } {
+    const currentTask = this.requireTask(taskId)
+    if (expectedTask && currentTask !== expectedTask) {
+      return { task: expectedTask, transitioned: false }
+    }
+    if (currentTask.status !== 'pending') {
+      return { task: currentTask, transitioned: false }
+    }
+    transition(currentTask)
+    currentTask.updatedAt = new Date()
+    this.tasks.set(taskId, currentTask)
+    return { task: currentTask, transitioned: true }
   }
 }
 const instance = new TaskManager()

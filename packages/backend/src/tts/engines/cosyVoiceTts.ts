@@ -32,10 +32,14 @@ const COSYVOICE_VOICES = [
 export class CosyVoiceTtsEngine implements TTSEngine {
   readonly name = 'cosyvoice-tts'
   readonly supportsSubtitles = false
+  readonly cacheNamespace: string
+  readonly outputFormat = 'mp3'
+  readonly sampleRate = 24000
   private readonly transport: DashScopeTransport
 
   constructor(config: DashScopeConfig) {
     this.transport = new DashScopeTransport(config, this.name)
+    this.cacheNamespace = `${this.name}:${config.model}`
   }
 
   async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {

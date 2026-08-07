@@ -2,28 +2,9 @@ import path from 'path'
 import { Request, Response, NextFunction } from 'express'
 import { logger } from '../utils/logger'
 import taskManager from '../utils/taskManager'
-import { EdgeSchema } from '../schema/generate'
 import { generateTTSStream, generateTTSStreamJson } from '../services/tts.stream.service'
 import { generateId, streamWithLimit } from '../utils'
-function formatBody({ text, pitch, voice, volume, rate, useLLM, engine }: EdgeSchema) {
-  const positivePercent = (value: string | undefined) => {
-    if (value === '0%' || value === '0' || value === undefined || value === '') return '+0%'
-    return value
-  }
-  const positiveHz = (value: string | undefined) => {
-    if (value === '0Hz' || value === '0' || value === undefined || value === '') return '+0Hz'
-    return value
-  }
-  return {
-    text: text.trim(),
-    pitch: positiveHz(pitch),
-    voice: positivePercent(voice),
-    rate: positivePercent(rate),
-    volume: positivePercent(volume),
-    useLLM,
-    engine,
-  }
-}
+import { normalizeTtsRequest } from '../services/ttsRequest'
 /**
  * @description 流式返回音频, 支持长文本
  * @param req
@@ -40,15 +21,16 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
       return
     }
     logger.debug('Generating audio with body:', req.body)
-    const formattedBody = formatBody(req.body)
+    const formattedBody = normalizeTtsRequest(req.body)
     task = taskManager.createTask(formattedBody)
     task.context = { req, res, body: req.body }
     logger.info(`Generated stream task ID: ${task.id}`)
     await generateTTSStream(formattedBody, task)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (task) taskManager.failTask(task.id, { message })
+    if (task) taskManager.failTask(task.id, { message }, task)
     logger.error(`createTaskStream error: ${message}`)
+    if (finishStartedResponse(res)) return
     next(error)
   }
 }
@@ -57,7 +39,7 @@ export async function generateJson(req: Request, res: Response, next: NextFuncti
   try {
     const data = req.body?.data
     logger.debug('generateJson with body:', data)
-    const formatedBody = data.map((item: any) => formatBody(item))
+    const formatedBody = data.map((item: any) => normalizeTtsRequest(item))
     const text = data.map((item: any) => item.text).join('')
     const taskParams = {
       ...formatedBody[0],
@@ -72,8 +54,15 @@ export async function generateJson(req: Request, res: Response, next: NextFuncti
     await generateTTSStreamJson(formatedBody, task)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (task) taskManager.failTask(task.id, { message })
+    if (task) taskManager.failTask(task.id, { message }, task)
     logger.error(`generateJson error: ${message}`)
+    if (finishStartedResponse(res)) return
     next(error)
   }
+}
+
+function finishStartedResponse(res: Response): boolean {
+  if (!res.headersSent) return false
+  if (!res.writableEnded) res.end()
+  return true
 }

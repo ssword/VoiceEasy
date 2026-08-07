@@ -57,6 +57,9 @@ const MODEL_VOICES: Record<string, Voice[]> = {
 export class QwenAudioTtsEngine implements TTSEngine {
   readonly name = 'qwen-audio-tts'
   readonly supportsSubtitles = false
+  readonly cacheNamespace: string
+  readonly outputFormat = 'mp3'
+  readonly sampleRate = 24000
   private readonly transport: DashScopeTransport
   private readonly voices: Voice[]
 
@@ -67,6 +70,7 @@ export class QwenAudioTtsEngine implements TTSEngine {
     }
     this.transport = new DashScopeTransport(config, this.name)
     this.voices = voices
+    this.cacheNamespace = `${this.name}:${config.model}`
   }
 
   async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
