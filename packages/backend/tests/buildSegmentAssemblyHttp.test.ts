@@ -22,6 +22,8 @@ const mockPipelineEvents: string[] = []
 const mockRunId = Date.now()
 let mockCancelStreamStarted: (() => void) | undefined
 let mockCancelStreamDestroyed = false
+let mockOverlapMs = 400
+let mockDuckPreviousDb = -12
 
 jest.mock('../src/utils/openai', () => ({
   openai: {
@@ -89,8 +91,8 @@ jest.mock('../src/utils/openai', () => ({
               text: 'Second recommended Segment.',
               name: 'en-US-AriaNeural',
               interrupt: true,
-              overlapMs: 400,
-              duckPreviousDb: -12,
+              overlapMs: mockOverlapMs,
+              duckPreviousDb: mockDuckPreviousDb,
             },
           ]
       return {
@@ -560,5 +562,99 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     } finally {
       splitText.mockRestore()
     }
+  })
+
+  it('isolates /generate final cache by timeline while reusing Segment synthesis', async () => {
+    const text = `Timeline cache isolation ${process.pid} ${Date.now()}.`
+    const request = {
+      text,
+      voice: 'en-US-AriaNeural',
+      useLLM: true,
+      enableInterruptions: true,
+      openaiBaseUrl: 'https://example.test/v1',
+      openaiKey: 'fixture-key',
+      openaiModel: 'fixture-model',
+    }
+    mockOverlapMs = 200
+    mockDuckPreviousDb = -8
+    const firstResponse = await fetch(`${baseUrl}/api/v1/tts/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const firstBody = await firstResponse.json()
+    const synthesesAfterFirst = mockPipelineEvents.filter((event) =>
+      event.startsWith('synthesize:')
+    ).length
+
+    mockOverlapMs = 600
+    mockDuckPreviousDb = -14
+    const secondResponse = await fetch(`${baseUrl}/api/v1/tts/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const secondBody = await secondResponse.json()
+
+    expect(firstResponse.status).toBe(200)
+    expect(secondResponse.status).toBe(200)
+    expect(secondBody.data.file).not.toBe(firstBody.data.file)
+    expect(
+      mockPipelineEvents.filter((event) => event.startsWith('synthesize:')).length
+    ).toBe(synthesesAfterFirst)
+
+    mockOverlapMs = 400
+    mockDuckPreviousDb = -12
+  })
+
+  it('isolates /createStream final cache by timeline while reusing Segment synthesis', async () => {
+    const request = {
+      text: `Streaming timeline cache isolation ${process.pid} ${Date.now()}.`,
+      voice: 'en-US-AriaNeural',
+      useLLM: true,
+      enableInterruptions: true,
+      openaiBaseUrl: 'https://example.test/v1',
+      openaiKey: 'fixture-key',
+      openaiModel: 'fixture-model',
+    }
+
+    mockOverlapMs = 200
+    mockDuckPreviousDb = -8
+    const firstResponse = await fetch(`${baseUrl}/api/v1/tts/createStream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const firstAudio = await firstResponse.arrayBuffer()
+    const synthesesAfterFirst = mockPipelineEvents.filter((event) =>
+      event.startsWith('synthesize:')
+    ).length
+
+    mockOverlapMs = 600
+    mockDuckPreviousDb = -14
+    const secondResponse = await fetch(`${baseUrl}/api/v1/tts/createStream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const secondAudio = await secondResponse.arrayBuffer()
+
+    expect(firstResponse.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
+    expect(secondResponse.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
+    expect(
+      mockPipelineEvents.filter((event) => event.startsWith('synthesize:')).length
+    ).toBe(synthesesAfterFirst)
+    const firstFile = path.join(probeDir, 'stream-cache-first.mp3')
+    const secondFile = path.join(probeDir, 'stream-cache-second.mp3')
+    await Promise.all([
+      fs.writeFile(firstFile, Buffer.from(firstAudio)),
+      fs.writeFile(secondFile, Buffer.from(secondAudio)),
+    ])
+    expect(await probeAudioDuration(secondFile)).toBeLessThan(
+      await probeAudioDuration(firstFile)
+    )
+
+    mockOverlapMs = 400
+    mockDuckPreviousDb = -12
   })
 })

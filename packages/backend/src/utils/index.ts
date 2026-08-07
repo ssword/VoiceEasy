@@ -1,8 +1,10 @@
 import fs from 'fs/promises'
+import crypto from 'crypto'
 import { createReadStream, createWriteStream } from 'fs'
 import { resolve } from 'path'
 import { Response } from 'express'
 import { PassThrough, Readable, Stream } from 'stream'
+import { finished } from 'stream/promises'
 import { logger } from './logger'
 import { AUDIO_DIR } from '../config'
 import { safeErrorMetadata } from './diagnostics'
@@ -79,7 +81,8 @@ export async function asyncSleep(delay = 200) {
 }
 export function generateId(voice: string, text: string) {
   const now = Date.now()
-  return `${voice}-${safeFileName(text).slice(0, 10)}-${now}.mp3`
+  const requestNonce = crypto.randomBytes(6).toString('hex')
+  return `${voice}-${safeFileName(text).slice(0, 10)}-${now}-${requestNonce}.mp3`
 }
 export function safeFileName(fileName: string) {
   return fileName.replace(/[/\\?%*:|"<>\r\n\s#]/g, '-')
@@ -122,6 +125,7 @@ export function streamToResponse(
   } = options
 
   const outputStream = new PassThrough()
+  let localStream: ReturnType<typeof createWriteStream> | undefined
   let isClientDisconnected = false
 
   Object.entries(headers).forEach(([key, value]) => {
@@ -152,6 +156,11 @@ export function streamToResponse(
     logger.error('Input stream error', { error: safeErrorMetadata(err) })
     if (!res.headersSent) res.status(500)
     const errorMessage = onError(err)
+    if (onEnd) {
+      outputStream.once('end', () => {
+        if (!res.writableEnded) res.end()
+      })
+    }
     outputStream.write(errorMessage)
     outputStream.end()
   })
@@ -164,12 +173,25 @@ export function streamToResponse(
     res.status(500).end('Internal server error')
   })
 
+  if (fileName) {
+    const streamFile = resolve(AUDIO_DIR, fileName)
+    localStream = createWriteStream(streamFile)
+  }
+
   // 流完成处理
   if (onEnd) {
-    inputStream.on('end', () => {
+    inputStream.on('end', async () => {
       if (isClientDisconnected) return
-      logger.info('Stream completed successfully')
-      onEnd()
+      try {
+        if (localStream) await finished(localStream)
+        logger.info('Stream completed successfully')
+        await onEnd()
+        if (!res.writableEnded) res.end()
+      } catch (error) {
+        logger.error('Stream finalization failed', { error: safeErrorMetadata(error) })
+        onError(error as Error)
+        if (!res.writableEnded) res.end()
+      }
     })
   }
 
@@ -189,19 +211,15 @@ export function streamToResponse(
     return
   }
   const streamer = inputStream.pipe(outputStream)
-  streamer.pipe(res)
+  streamer.pipe(res, { end: !onEnd })
 
-  if (fileName) {
-    const streamFile = resolve(AUDIO_DIR, fileName)
-    const localStream = createWriteStream(streamFile)
-    streamer.pipe(localStream)
-  }
+  if (localStream) streamer.pipe(localStream)
 }
 
 interface StreamOptions {
   headers?: Record<string, string>
   onError?: (err: Error) => string
-  onEnd?: () => void
+  onEnd?: () => void | Promise<void>
   onClose?: () => void
   fileName?: string
 }

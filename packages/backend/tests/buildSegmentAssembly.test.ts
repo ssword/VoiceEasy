@@ -1,12 +1,21 @@
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
+import * as childProcess from 'child_process'
+import { EventEmitter } from 'events'
 import { Readable, PassThrough } from 'stream'
 import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
 } from '../src/services/buildSegmentAssembly.service'
 import { createStereoToneMp3, probeAudioDuration, probeStereoRms } from './helpers/audio'
+
+jest.mock('child_process', () => {
+  const actual = jest.requireActual<typeof import('child_process')>('child_process')
+  return { ...actual, spawn: jest.fn(actual.spawn) }
+})
+
+const actualSpawn = jest.requireActual<typeof import('child_process')>('child_process').spawn
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -86,6 +95,7 @@ describe('Build Segment audio assembly boundary', () => {
       const assembledDuration = await probeAudioDuration(outputFile)
       expect(assembledDuration).toBeGreaterThan(sourceDuration * 1.8)
       expect(assembledDuration).toBeLessThan(sourceDuration * 2.2)
+      await expect(fs.stat(path.join(tempDir, 'file_list.txt'))).rejects.toThrow()
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }
@@ -221,6 +231,64 @@ describe('Build Segment audio assembly boundary', () => {
       ).rejects.toThrow(/Timeline Mix input/i)
       await expect(fs.stat(outputFile)).rejects.toThrow()
     } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['ffprobe failure', 'probe-failure', /could not read input duration/i],
+    ['ffmpeg non-zero exit', 'mix-failure', /Timeline Mix failed/i],
+    ['zero-byte ffmpeg output', 'empty-output', /empty audio/i],
+  ])('cleans task output after %s', async (_name, failureMode, expectedError) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-failure-'))
+    const inputFile = path.join(tempDir, 'input.mp3')
+    const outputFile = path.join(tempDir, 'output.mp3')
+    await fs.writeFile(inputFile, Buffer.from('non-empty internal fixture'))
+
+    const spawn = jest.mocked(childProcess.spawn)
+    spawn.mockImplementation(((command: string) => {
+      const child = new EventEmitter() as any
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.kill = jest.fn()
+      process.nextTick(() => {
+        if (command === 'ffprobe') {
+          if (failureMode === 'probe-failure') {
+            child.stderr.end('deterministic probe failure')
+            child.emit('close', 2)
+          } else {
+            child.stdout.end('1.0\n')
+            child.emit('close', 0)
+          }
+          return
+        }
+        if (failureMode === 'mix-failure') {
+          child.stderr.end('deterministic mix failure')
+          child.emit('close', 7)
+        } else {
+          child.emit('close', 0)
+        }
+      })
+      return child
+    }) as typeof childProcess.spawn)
+
+    try {
+      await expect(
+        assembleBuildSegmentAudio({
+          strategy: 'timeline-mix',
+          segments: [
+            { audioFile: inputFile, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          ],
+          inputRoot: tempDir,
+          outputFile,
+        })
+      ).rejects.toThrow(expectedError)
+      await expect(fs.stat(outputFile)).rejects.toThrow()
+      expect((await fs.readdir(tempDir)).filter((file) => file.includes('.timeline-'))).toEqual(
+        []
+      )
+    } finally {
+      spawn.mockImplementation(actualSpawn)
       await fs.rm(tempDir, { recursive: true, force: true })
     }
   })

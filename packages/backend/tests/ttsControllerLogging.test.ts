@@ -47,6 +47,9 @@ describe('Ticket 03 — non-streaming diagnostic logging', () => {
     jest.mocked(generateTTS).mockImplementation(async (_params, _task, diagnostics) => {
       diagnostics!.segmentCount = 3
       diagnostics!.retryCount = 1
+      diagnostics!.generationMode = 'timeline-mix'
+      diagnostics!.effectiveInterruptionCount = 2
+      diagnostics!.mixDurationMs = 37
       return { audio: '/audio/fixture.mp3', srt: '' }
     })
 
@@ -59,6 +62,9 @@ describe('Ticket 03 — non-streaming diagnostic logging', () => {
     expect(logs).toContain('fixture-model')
     expect(logs).toContain('"segmentCount":3')
     expect(logs).toContain('"retryCount":1')
+    expect(logs).toContain('"generationMode":"timeline-mix"')
+    expect(logs).toContain('"effectiveInterruptionCount":2')
+    expect(logs).toContain('"mixDurationMs":37')
     expect(logs).toContain('audioBytes')
     expect(logs).toContain('durationMs')
   })
@@ -67,6 +73,9 @@ describe('Ticket 03 — non-streaming diagnostic logging', () => {
     jest.mocked(generateTTS).mockImplementation(async (_params, _task, diagnostics) => {
       diagnostics!.segmentCount = 2
       diagnostics!.retryCount = 2
+      diagnostics!.generationMode = 'timeline-mix'
+      diagnostics!.effectiveInterruptionCount = 1
+      diagnostics!.mixDurationMs = 11
       throw new Error(`failed for ${source} with sk-private`)
     })
     const next = jest.fn() as NextFunction
@@ -79,6 +88,9 @@ describe('Ticket 03 — non-streaming diagnostic logging', () => {
     expect(logs).toContain('request-non-stream')
     expect(logs).toContain('"segmentCount":2')
     expect(logs).toContain('"retryCount":2')
+    expect(logs).toContain('"generationMode":"timeline-mix"')
+    expect(logs).toContain('"effectiveInterruptionCount":1')
+    expect(logs).toContain('"mixDurationMs":11')
     expect(logs).toContain('audioBytes')
     expect(logs).toContain('durationMs')
     expect(next).toHaveBeenCalledWith(expect.any(Error))

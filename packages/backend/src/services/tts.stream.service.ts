@@ -2,7 +2,7 @@ import path, { resolve } from 'path'
 import { Response } from 'express'
 import fs, { readdir } from 'fs/promises'
 import { createReadStream, createWriteStream } from 'fs'
-import { AUDIO_DIR } from '../config'
+import { AUDIO_DIR, STATIC_DOMAIN } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
 import {
@@ -22,7 +22,11 @@ import audioCacheInstance from './audioCache.service'
 import taskManager, { Task } from '../utils/taskManager'
 import { Readable, PassThrough } from 'stream'
 import { pipeline } from 'stream/promises'
-import { createSynthesisCacheKey } from './synthesisCache'
+import {
+  createFinalAudioCacheIdentity,
+  createFinalAudioCacheKey,
+  createSynthesisCacheKey,
+} from './synthesisCache'
 import { resolveRecommendationVoices } from './recommendationVoices'
 import { audioByteLength, generationRuntimeMetadata } from '../utils/diagnostics'
 import {
@@ -71,7 +75,7 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
 
   // 检查缓存, 如果有缓存则直接返回
   const cacheKey = createSynthesisCacheKey(params)
-  const cache = await audioCacheInstance.getAudio(cacheKey)
+  const cache = useLLM ? null : await audioCacheInstance.getAudio(cacheKey)
   if (cache) {
     const data = {
       ...cache,
@@ -228,27 +232,105 @@ async function assembleRecommendedSegments(segments: BuildSegment[], task: Task)
     return
   }
 
-  await bufferTimelineBuildSegments(segments, task)
+  const finalCacheKey = createFinalAudioCacheKey({
+    enableInterruptions: true,
+    segments,
+    sourceText: task.context?.segment?.text,
+    recommendationModel: task.fields?.recommendationModel,
+  })
+  const finalCache = await audioCacheInstance.getAudio(finalCacheKey)
+  if (finalCache) {
+    const identity = createFinalAudioCacheIdentity({
+      enableInterruptions: true,
+      segments,
+      sourceText: task.context?.segment?.text,
+      recommendationModel: task.fields?.recommendationModel,
+    })
+    if (task.context?.diagnostics) {
+      task.context.diagnostics.segmentCount = segments.length
+      task.context.diagnostics.generationMode = identity.mode
+      task.context.diagnostics.effectiveInterruptionCount = identity.timeline.filter(
+        (item) => item.interrupt
+      ).length
+      task.context.diagnostics.audioBytes = await audioByteLength(AUDIO_DIR, finalCache.audio)
+    }
+    sendCachedStreamResult(task, finalCache)
+    return
+  }
+
+  await bufferTimelineBuildSegments(segments, task, finalCacheKey)
 }
 
-async function bufferTimelineBuildSegments(segments: BuildSegment[], task: Task): Promise<void> {
+async function bufferTimelineBuildSegments(
+  segments: BuildSegment[],
+  task: Task,
+  finalCacheKey: string
+): Promise<void> {
   const { res, segment } = task.context as Required<NonNullable<Task['context']>>
   const signal = task.context?.abortSignal
   const outputFile = path.resolve(AUDIO_DIR, segment.id)
   const inputDir = `${outputFile}.timeline-inputs`
+  const pendingStableFiles: string[] = []
   await ensureDir(inputDir)
 
   try {
+    if (task.context?.diagnostics) {
+      task.context.diagnostics.generationMode = 'timeline-mix'
+      task.context.diagnostics.effectiveInterruptionCount = segments.filter(
+        (item, index) =>
+          index > 0 && item.interrupt === true && (item.overlapMs || 0) > 0
+      ).length
+    }
     const generatedSegments: TimelineBuildSegmentAudio[] = []
+    const subtitleJsonFiles: string[] = []
+    const supportsSubtitles = buildSegmentsSupportSubtitles(segments)
+    const segmentCacheDir = path.resolve(AUDIO_DIR, '.segment-cache')
     for (const [index, buildSegment] of segments.entries()) {
       signal?.throwIfAborted()
       const audioFile = path.join(inputDir, `${String(index + 1).padStart(6, '0')}.mp3`)
+      const segmentCacheKey = createSynthesisCacheKey(buildSegment)
+      const cachedSegment = await audioCacheInstance.getAudio(segmentCacheKey)
+      const cachedAudioFile = cachedSegment
+        ? path.isAbsolute(cachedSegment.audio)
+          ? cachedSegment.audio
+          : path.resolve(AUDIO_DIR, path.basename(cachedSegment.audio))
+        : undefined
+      const cachedAudioStat = cachedAudioFile
+        ? await fs.stat(cachedAudioFile).catch(() => undefined)
+        : undefined
+      if (cachedAudioStat?.isFile() && cachedAudioStat.size > 0) {
+        generatedSegments.push({
+          audioFile: cachedAudioFile!,
+          interrupt: buildSegment.interrupt === true,
+          overlapMs: buildSegment.overlapMs || 0,
+          duckPreviousDb: buildSegment.duckPreviousDb || 0,
+        })
+        if (supportsSubtitles) subtitleJsonFiles.push(`${cachedAudioFile}.json`)
+        continue
+      }
       const audioStream = (await generateSingleVoiceStream({
         ...buildSegment,
         output: audioFile,
         outputType: 'stream',
       })) as Readable
       await pipeline(audioStream, createWriteStream(audioFile), { signal })
+      await ensureDir(segmentCacheDir)
+      const stableAudioFile = path.join(segmentCacheDir, `${segmentCacheKey}.mp3`)
+      const stableTemporaryFile = `${stableAudioFile}.${task.id}.${index}.tmp`
+      pendingStableFiles.push(stableTemporaryFile)
+      await fs.copyFile(audioFile, stableTemporaryFile)
+      await fs.rename(stableTemporaryFile, stableAudioFile)
+      pendingStableFiles.splice(pendingStableFiles.indexOf(stableTemporaryFile), 1)
+      if (supportsSubtitles) {
+        const subtitleJsonFile = await findStreamSubtitleJsonFile(audioFile)
+        await fs.copyFile(subtitleJsonFile, `${stableAudioFile}.json`)
+        subtitleJsonFiles.push(subtitleJsonFile)
+      }
+      await audioCacheInstance.setAudio(segmentCacheKey, {
+        ...buildSegment,
+        audio: stableAudioFile,
+        srt: '',
+      })
       generatedSegments.push({
         audioFile,
         interrupt: buildSegment.interrupt === true,
@@ -266,30 +348,57 @@ async function bufferTimelineBuildSegments(segments: BuildSegment[], task: Task)
       outputFile,
       signal,
     })
-    const supportsSubtitles = buildSegmentsSupportSubtitles(segments)
+    if (task.context?.diagnostics) {
+      task.context.diagnostics.mixDurationMs = timelineResult.mixDurationMs
+    }
     if (supportsSubtitles) {
-      const jsonFiles = await Promise.all(
-        generatedSegments.map((generatedSegment) =>
-          findStreamSubtitleJsonFile(generatedSegment.audioFile)
-        )
-      )
       await assembleBuildSegmentSubtitles({
         inputDir,
         outputFile,
-        jsonFiles,
+        jsonFiles: subtitleJsonFiles,
         segmentStartsMs: timelineResult.segmentStartsMs,
       })
     }
+    await audioCacheInstance.setAudio(finalCacheKey, {
+      ...segments[0],
+      audio: `${STATIC_DOMAIN}/${path.basename(outputFile)}`,
+      srt: supportsSubtitles
+        ? `${STATIC_DOMAIN}/${path.parse(outputFile).name}.srt`
+        : '',
+    })
     streamTaskToResponse(task, createReadStream(outputFile), {
       mode: 'buffered-timeline',
       contentType: 'audio/mpeg',
-      onCompleted: () => void fs.rm(inputDir, { recursive: true, force: true }),
+      onCompleted: () => fs.rm(inputDir, { recursive: true, force: true }),
       onClosed: () => void fs.rm(inputDir, { recursive: true, force: true }),
     })
   } catch (error) {
-    await fs.rm(inputDir, { recursive: true, force: true })
+    await Promise.all([
+      fs.rm(inputDir, { recursive: true, force: true }),
+      fs.unlink(outputFile).catch(() => undefined),
+      fs.unlink(outputFile.replace('.mp3', '.srt')).catch(() => undefined),
+      ...pendingStableFiles.map((file) => fs.unlink(file).catch(() => undefined)),
+    ])
     throw error
   }
+}
+
+function sendCachedStreamResult(
+  task: Task,
+  cache: Awaited<ReturnType<typeof audioCacheInstance.getAudio>>
+) {
+  if (!cache) return
+  const data = {
+    ...cache,
+    file: path.parse(cache.audio).base,
+    srt: path.parse(cache.srt).base,
+    text: '',
+  }
+  task.context?.res?.setHeader('x-generate-tts-type', 'application/json')
+  task.context?.res?.setHeader('Access-Control-Expose-Headers', 'x-generate-tts-type')
+  task.context?.res?.json({ code: 200, data, success: true })
+  task.endTask?.(task.id)
+  logStreamCompletion(task, task.context?.res)
 }
 
 async function findStreamSubtitleJsonFile(audioFile: string): Promise<string> {
@@ -452,15 +561,20 @@ async function streamAssembledBuildSegments(
   segments: AsyncIterable<GeneratedStreamBuildSegmentAudio>,
   supportsSubtitles: boolean
 ): Promise<void> {
+  if (task.context?.diagnostics) task.context.diagnostics.generationMode = 'stream'
   const outputStream = new PassThrough()
   streamTaskToResponse(task, outputStream, {
     fileName: path.basename(outputFile),
     onCompleted: () => {
       if (supportsSubtitles) {
-        setTimeout(() => {
-          handleSrt(outputFile)
-        }, 200)
+        return handleSrt(outputFile)
       }
+    },
+    onClosed: () => {
+      void Promise.all([
+        fs.unlink(outputFile).catch(() => undefined),
+        fs.unlink(outputFile.replace('.mp3', '.srt')).catch(() => undefined),
+      ])
     },
   })
 
@@ -483,8 +597,8 @@ function streamTaskToResponse(
     fileName?: string
     mode?: 'stream' | 'buffered-timeline'
     contentType?: string
-    onCompleted?: () => void
-    onClosed?: () => void
+    onCompleted?: () => void | Promise<void>
+    onClosed?: () => void | Promise<void>
   }
 ) {
   const { res } = task.context as Required<NonNullable<Task['context']>>
@@ -508,10 +622,10 @@ function streamTaskToResponse(
       taskManager.failTask(task.id, { message: error.message }, task)
       return `TTS generation failed: ${error.message}`
     },
-    onEnd: () => {
+    onEnd: async () => {
+      await options.onCompleted?.()
       taskManager.finishTask(task.id, task)
       logStreamCompletion(task, res)
-      options.onCompleted?.()
     },
     onClose: () => {
       taskManager.cancelTask(task.id, 'Client disconnected', task)

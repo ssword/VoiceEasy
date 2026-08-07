@@ -51,6 +51,7 @@ export type BuildSegmentAssemblyRequest =
 
 export interface TimelineBuildSegmentAssemblyResult {
   segmentStartsMs: number[]
+  mixDurationMs: number
 }
 
 /**
@@ -196,13 +197,15 @@ async function timelineMixAudio(
   )
 
   try {
+    const mixStartedAt = Date.now()
     await runMediaProcess('ffmpeg', args, 'Timeline Mix failed', signal)
+    const mixDurationMs = Date.now() - mixStartedAt
     const outputStat = await fs.stat(temporaryOutput).catch(() => undefined)
     if (!outputStat?.isFile() || outputStat.size === 0) {
       throw new Error('Timeline Mix produced empty audio')
     }
     await fs.rename(temporaryOutput, outputFile)
-    return { segmentStartsMs: startsMs }
+    return { segmentStartsMs: startsMs, mixDurationMs }
   } catch (error) {
     await fs.unlink(temporaryOutput).catch(() => undefined)
     throw error
@@ -319,17 +322,21 @@ async function concatAudioFiles({
   const tempListPath = path.resolve(inputDir, 'file_list.txt')
   await fs.writeFile(tempListPath, fileList.map((file) => `file '${file}'`).join('\n'))
 
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg()
-      .input(tempListPath)
-      .inputFormat('concat')
-      .inputOption('-safe', '0')
-      .audioCodec('copy')
-      .output(outputFile)
-      .on('end', () => resolve())
-      .on('error', (err) => reject(new Error(`Concat failed: ${err.message}`)))
-      .run()
-  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg()
+        .input(tempListPath)
+        .inputFormat('concat')
+        .inputOption('-safe', '0')
+        .audioCodec('copy')
+        .output(outputFile)
+        .on('end', () => resolve())
+        .on('error', (err) => reject(new Error(`Concat failed: ${err.message}`)))
+        .run()
+    })
+  } finally {
+    await fs.unlink(tempListPath).catch(() => undefined)
+  }
 }
 
 export interface BuildSegmentSubtitleAssemblyRequest {

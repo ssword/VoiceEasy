@@ -10,10 +10,21 @@ export interface GenerationDiagnostics {
   audioBytes: number
   segmentCount: number
   retryCount: number
+  generationMode: 'concat' | 'stream' | 'timeline-mix'
+  effectiveInterruptionCount: number
+  mixDurationMs: number
 }
 
 export function createGenerationDiagnostics(segmentCount = 0): GenerationDiagnostics {
-  return { startedAt: Date.now(), audioBytes: 0, segmentCount, retryCount: 0 }
+  return {
+    startedAt: Date.now(),
+    audioBytes: 0,
+    segmentCount,
+    retryCount: 0,
+    generationMode: 'concat',
+    effectiveInterruptionCount: 0,
+    mixDurationMs: 0,
+  }
 }
 
 type GenerationRuntimeMetadata = Omit<GenerationDiagnostics, 'startedAt'> & {
@@ -29,6 +40,9 @@ export function generationRuntimeMetadata(
     audioBytes: diagnostics?.audioBytes || 0,
     segmentCount: diagnostics?.segmentCount || 0,
     retryCount: diagnostics?.retryCount || 0,
+    generationMode: diagnostics?.generationMode || 'concat',
+    effectiveInterruptionCount: diagnostics?.effectiveInterruptionCount || 0,
+    mixDurationMs: diagnostics?.mixDurationMs || 0,
     ...overrides,
   }
 }

@@ -14,7 +14,11 @@ import { MapLimitController } from '../controllers/concurrency.controller'
 import audioCacheInstance from './audioCache.service'
 import { Task } from '../utils/taskManager'
 import { handleSrt } from './tts.stream.service'
-import { createSynthesisCacheKey } from './synthesisCache'
+import {
+  createFinalAudioCacheIdentity,
+  createFinalAudioCacheKey,
+  createSynthesisCacheKey,
+} from './synthesisCache'
 import { resolveRecommendationVoices } from './recommendationVoices'
 import {
   createGenerationDiagnostics,
@@ -57,9 +61,11 @@ export async function generateTTS(
     instruction,
     enableInterruptions,
   } = params
+  const recommendationModel = (params as typeof params & { recommendationModel?: string })
+    .recommendationModel
   // 检查缓存
-  const cacheKey = createSynthesisCacheKey(params)
-  const cache = await audioCacheInstance.getAudio(cacheKey)
+  const requestCacheKey = createSynthesisCacheKey(params)
+  const cache = useLLM ? null : await audioCacheInstance.getAudio(requestCacheKey)
   if (cache) {
     diagnostics.segmentCount = 1
     logger.info('TTS cache hit', { engine, voice, textLength: text.length })
@@ -79,6 +85,7 @@ export async function generateTTS(
       lang,
       engine,
       enableInterruptions,
+      recommendationModel,
       diagnostics,
       task
     )
@@ -106,7 +113,9 @@ export async function generateTTS(
   if (result.partial) {
     logger.warn(`Partial result detected, some splits generated audio failed!`)
   } else {
-    await audioCacheInstance.setAudio(cacheKey, { ...params, ...result })
+    if (!useLLM) {
+      await audioCacheInstance.setAudio(requestCacheKey, { ...params, ...result })
+    }
   }
   return result
 }
@@ -120,6 +129,7 @@ async function generateWithLLM(
   lang: string,
   engine: string,
   enableInterruptions: boolean,
+  recommendationModel: string | undefined,
   diagnostics: GenerationDiagnostics,
   task?: Task
 ): Promise<TTSResult> {
@@ -161,7 +171,14 @@ async function generateWithLLM(
       engine,
       segmentCount: formattedSegments.length,
     })
-    const result = await buildSegmentList(segment, formattedSegments, diagnostics, task)
+    const result = await buildSegmentList(
+      segment,
+      formattedSegments,
+      diagnostics,
+      task,
+      enableInterruptions,
+      recommendationModel
+    )
     task?.updateProgress?.(task.id, 100)
     return result
   } else {
@@ -200,7 +217,9 @@ async function generateWithLLM(
           { ...segment, id: `[segments:${count}]${segment.id}` },
           formattedSegments,
           diagnostics,
-          task
+          task,
+          false,
+          recommendationModel
         )
         task?.updateProgress?.(task.id, getProgress())
         finalSegments.push(result)
@@ -211,7 +230,9 @@ async function generateWithLLM(
         segment,
         normalizeRecommendationSegments(globalBuildSegments, true) as unknown as BuildSegment[],
         diagnostics,
-        task
+        task,
+        true,
+        recommendationModel
       )
     }
     return await buildFinal(finalSegments, id, engine)
@@ -268,7 +289,7 @@ async function generateWithoutLLM(
     return buildSegment(segment, params, diagnostics)
   } else {
     const buildSegments = segments.map((segment) => ({ ...params, text: segment }))
-    let result = await buildSegmentList(segment, buildSegments, diagnostics, task)
+    let result = await buildSegmentList(segment, buildSegments, diagnostics, task, false)
     task?.updateProgress?.(task.id, 100)
     return result
   }
@@ -320,13 +341,41 @@ async function buildSegmentList(
   segment: Segment,
   segments: BuildSegment[],
   diagnostics: GenerationDiagnostics,
-  task?: Task
+  task?: Task,
+  enableInterruptions = false,
+  recommendationModel = ''
 ): Promise<TTSResult> {
   const length = segments.length
   let handledLength = 0
 
   if (!length) {
     throw new Error(`No segments found for task ${task?.id || 'unknown'}!`)
+  }
+  const finalCacheIdentity = createFinalAudioCacheIdentity({
+    enableInterruptions,
+    segments,
+    sourceText: segment.text,
+    recommendationModel,
+  })
+  const finalCacheKey = createFinalAudioCacheKey({
+    enableInterruptions,
+    segments,
+    sourceText: segment.text,
+    recommendationModel,
+  })
+  const finalCache = await audioCacheInstance.getAudio(finalCacheKey)
+  if (finalCache) {
+    diagnostics.segmentCount = length
+    diagnostics.generationMode = finalCacheIdentity.mode
+    diagnostics.effectiveInterruptionCount = finalCacheIdentity.timeline.filter(
+      (item) => item.interrupt
+    ).length
+    logger.info('Final Audio Assembly cache hit', {
+      generationMode: diagnostics.generationMode,
+      effectiveInterruptionCount: diagnostics.effectiveInterruptionCount,
+      segmentCount: length,
+    })
+    return finalCache
   }
   const { id } = segment
   const tmpDirName = id.replace('.mp3', '')
@@ -397,6 +446,10 @@ async function buildSegmentList(
   })
   let segmentStartsMs: number[] | undefined
   if (hasEffectiveInterruption) {
+    diagnostics.generationMode = 'timeline-mix'
+    diagnostics.effectiveInterruptionCount = generatedSegments.filter(
+      (segment, index) => index > 0 && segment.interrupt && segment.overlapMs > 0
+    ).length
     const timelineResult = await assembleBuildSegmentAudio({
       strategy: 'timeline-mix',
       segments: generatedSegments,
@@ -404,7 +457,9 @@ async function buildSegmentList(
       outputFile,
     })
     segmentStartsMs = timelineResult.segmentStartsMs
+    diagnostics.mixDurationMs = timelineResult.mixDurationMs
   } else {
+    diagnostics.generationMode = 'concat'
     await assembleBuildSegmentAudio({
       strategy: 'concat',
       segments: generatedSegments,
@@ -428,11 +483,15 @@ async function buildSegmentList(
     logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
   }
 
-  return {
+  const result = {
     audio: `${STATIC_DOMAIN}/${id}`,
     srt: supportsSubtitles ? `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}` : '',
     partial,
   }
+  if (!partial) {
+    await audioCacheInstance.setAudio(finalCacheKey, { ...segments[0], ...result })
+  }
+  return result
 }
 
 /**

@@ -220,6 +220,9 @@ describe('Ticket 02 — streaming Task lifecycle', () => {
     expect(logs).toContain('durationMs')
     expect(logs).toContain('retryCount')
     expect(logs).toContain('audioBytes')
+    expect(logs).toContain('generationMode')
+    expect(logs).toContain('effectiveInterruptionCount')
+    expect(logs).toContain('mixDurationMs')
   })
 
   it('completes a long-text LLM stream and accepts the identical content again', async () => {
