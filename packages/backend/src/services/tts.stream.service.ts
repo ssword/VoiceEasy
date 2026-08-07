@@ -26,7 +26,7 @@ import { audioByteLength, generationRuntimeMetadata } from '../utils/diagnostics
 import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
-  GeneratedBuildSegmentAudio,
+  GeneratedStreamBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
 
 // 错误消息枚举
@@ -143,7 +143,7 @@ async function generateWithLLMStream(task: Task) {
     const getProgress = () => {
       return Number(((count / segments.length) * 100).toFixed(2))
     }
-    async function* generatedAudio(): AsyncGenerator<GeneratedBuildSegmentAudio> {
+    async function* generatedAudio(): AsyncGenerator<GeneratedStreamBuildSegmentAudio> {
       for (const textSegment of segments) {
         count++
         const prompt = getPrompt(lang, voiceList, textSegment, engine)
@@ -166,7 +166,7 @@ async function generateWithLLMStream(task: Task) {
         })
         for (const buildSegment of llmFormatted) {
           yield {
-            audio: (await generateSingleVoiceStream({
+            audioStream: (await generateSingleVoiceStream({
               ...buildSegment,
               output,
               outputType: 'stream',
@@ -274,7 +274,9 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
     return engine?.supportsSubtitles !== false
   })
 
-  async function* generatedAudio(maxRetries = 3): AsyncGenerator<GeneratedBuildSegmentAudio> {
+  async function* generatedAudio(
+    maxRetries = 3
+  ): AsyncGenerator<GeneratedStreamBuildSegmentAudio> {
     for (const [index, buildSegment] of segments.entries()) {
       const generateWithRetry = async (attempt = 0): Promise<Readable> => {
         try {
@@ -306,7 +308,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
       try {
         // TODO: Concurrency of streaming flow
         const audioStream = await generateWithRetry()
-        yield { audio: audioStream }
+        yield { audioStream }
         completedSegments++
         logger.info(`Segment ${index + 1}/${totalSegments} completed. Progress: ${progress()}%`)
       } catch (err) {
@@ -326,7 +328,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
 async function streamAssembledBuildSegments(
   task: Task,
   outputFile: string,
-  segments: AsyncIterable<GeneratedBuildSegmentAudio>,
+  segments: AsyncIterable<GeneratedStreamBuildSegmentAudio>,
   supportsSubtitles: boolean
 ): Promise<void> {
   const outputStream = new PassThrough()
@@ -343,8 +345,9 @@ async function streamAssembledBuildSegments(
 
   try {
     await assembleBuildSegmentAudio({
+      strategy: 'stream',
       segments,
-      destination: { kind: 'stream', output: outputStream },
+      output: outputStream,
     })
   } catch (error) {
     logger.error('Audio processing aborted')

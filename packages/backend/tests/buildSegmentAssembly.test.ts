@@ -1,12 +1,12 @@
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
-import { spawn } from 'child_process'
 import { Readable, PassThrough } from 'stream'
 import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
 } from '../src/services/buildSegmentAssembly.service'
+import { probeAudioDuration } from './helpers/audio'
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -16,45 +16,53 @@ async function readAll(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-async function probeDuration(file: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('ffprobe', [
-      '-v',
-      'error',
-      '-show_entries',
-      'format=duration',
-      '-of',
-      'default=noprint_wrappers=1:nokey=1',
-      file,
-    ])
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (chunk) => (stdout += chunk))
-    child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.once('error', reject)
-    child.once('close', (code) => {
-      if (code !== 0) return reject(new Error(stderr || `ffprobe exited with ${code}`))
-      resolve(Number(stdout.trim()))
-    })
-  })
-}
-
 describe('Build Segment audio assembly boundary', () => {
   it('streams generated Build Segment audio in the supplied order', async () => {
     async function* generatedAudio() {
-      yield { audio: Readable.from([Buffer.from('first-')]) }
-      yield { audio: Readable.from([Buffer.from('second')]) }
+      yield { audioStream: Readable.from([Buffer.from('first-')]) }
+      yield { audioStream: Readable.from([Buffer.from('second')]) }
     }
 
     const output = new PassThrough()
     const assembled = readAll(output)
 
     await assembleBuildSegmentAudio({
+      strategy: 'stream',
       segments: generatedAudio(),
-      destination: { kind: 'stream', output },
+      output,
     })
 
     await expect(assembled).resolves.toEqual(Buffer.from('first-second'))
+  })
+
+  it('preserves an empty Streaming result as an empty successful response', async () => {
+    const output = new PassThrough()
+    const assembled = readAll(output)
+
+    await assembleBuildSegmentAudio({
+      strategy: 'stream',
+      segments: [],
+      output,
+    })
+
+    await expect(assembled).resolves.toEqual(Buffer.alloc(0))
+  })
+
+  it('stops active Build Segment audio when the Streaming destination closes', async () => {
+    const audioStream = new PassThrough()
+    const output = new PassThrough({ highWaterMark: 1 })
+    const assembly = assembleBuildSegmentAudio({
+      strategy: 'stream',
+      segments: [{ audioStream }],
+      output,
+    })
+
+    audioStream.write(Buffer.alloc(1024))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    output.destroy()
+
+    await expect(assembly).rejects.toThrow('Audio Assembly output closed')
+    expect(audioStream.destroyed).toBe(true)
   })
 
   it('uses the existing Concat strategy to create playable audio', async () => {
@@ -66,14 +74,16 @@ describe('Build Segment audio assembly boundary', () => {
 
     try {
       await Promise.all([fs.copyFile(fixture, first), fs.copyFile(fixture, second)])
-      const sourceDuration = await probeDuration(fixture)
+      const sourceDuration = await probeAudioDuration(fixture)
 
       await assembleBuildSegmentAudio({
-        segments: [{ audio: first }, { audio: second }],
-        destination: { kind: 'file', inputDir: tempDir, outputFile },
+        strategy: 'concat',
+        segments: [{ audioFile: first }, { audioFile: second }],
+        inputDir: tempDir,
+        outputFile,
       })
 
-      const assembledDuration = await probeDuration(outputFile)
+      const assembledDuration = await probeAudioDuration(outputFile)
       expect(assembledDuration).toBeGreaterThan(sourceDuration * 1.8)
       expect(assembledDuration).toBeLessThan(sourceDuration * 2.2)
     } finally {

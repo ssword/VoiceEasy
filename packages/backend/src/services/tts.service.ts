@@ -3,16 +3,15 @@ import fs from 'fs/promises'
 import { AUDIO_DIR, STATIC_DOMAIN, EDGE_API_LIMIT } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
-import { ensureDir, generateId, getLangConfig, readJson } from '../utils'
+import { ensureDir, generateId, getLangConfig } from '../utils'
 import { ttsPluginManager } from '../tts/pluginManager'
 import { DEFAULT_ENGINE } from '../config'
 import { openai } from '../utils/openai'
 import { splitText } from './text.service'
-import { generateSingleVoice, generateSrt } from './edge-tts.service'
+import { generateSingleVoice } from './edge-tts.service'
 import { EdgeSchema } from '../schema/generate'
 import { MapLimitController } from '../controllers/concurrency.controller'
 import audioCacheInstance from './audioCache.service'
-import { mergeSubtitleFiles, SubtitleFile, SubtitleFiles } from '../utils/subtitle'
 import { Task } from '../utils/taskManager'
 import { handleSrt } from './tts.stream.service'
 import { createSynthesisCacheKey } from './synthesisCache'
@@ -175,34 +174,33 @@ async function generateWithLLM(
   }
 }
 const buildFinal = async (finalSegments: TTSResult[], id: string, engine?: string) => {
-  // Check if engine supports subtitles before trying to merge
+  // Check if engine supports subtitles before trying to Concat
   const engInstance = engine ? ttsPluginManager.getEngine(engine) : undefined
   const supportsSrt = engInstance?.supportsSubtitles !== false
+  const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
+  const outputFile = path.resolve(AUDIO_DIR, id)
+  await ensureDir(finalDir)
 
   if (supportsSrt) {
-    const subtitleFiles: SubtitleFiles = await Promise.all(
-      finalSegments.map((file) => {
-        const base = path.basename(file.audio)
-        const jsonPath = path.resolve(AUDIO_DIR, base.replace('.mp3', ''), 'all_splits.mp3.json')
-        return readJson<SubtitleFile>(jsonPath)
-      })
-    )
-    const mergedJson = mergeSubtitleFiles(subtitleFiles)
-    const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
-    await ensureDir(finalDir)
-    const finalJson = path.resolve(finalDir, '[merged]all_splits.mp3.json')
-    await fs.writeFile(finalJson, JSON.stringify(mergedJson, null, 2))
-    await generateSrt(finalJson, path.resolve(AUDIO_DIR, id.replace('.mp3', '.srt')))
+    const jsonFiles = finalSegments.map((file) => {
+      const base = path.basename(file.audio)
+      return path.resolve(AUDIO_DIR, base.replace('.mp3', ''), 'all_splits.mp3.json')
+    })
+    await assembleBuildSegmentSubtitles({
+      inputDir: finalDir,
+      outputFile,
+      jsonFiles,
+      metadataFileName: '[merged]all_splits.mp3.json',
+    })
   }
   const fileList = finalSegments.map((segment) =>
     path.resolve(AUDIO_DIR, path.parse(segment.audio).base)
   )
-  const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
-  await ensureDir(finalDir)
-  const outputFile = path.resolve(AUDIO_DIR, id)
   await assembleBuildSegmentAudio({
-    segments: fileList.map((audio) => ({ audio })),
-    destination: { kind: 'file', inputDir: finalDir, outputFile },
+    strategy: 'concat',
+    segments: fileList.map((audioFile) => ({ audioFile })),
+    inputDir: finalDir,
+    outputFile,
   })
   return {
     audio: `${STATIC_DOMAIN}/${id}`,
@@ -335,8 +333,10 @@ async function buildSegmentList(
   const outputFile = path.resolve(AUDIO_DIR, id)
   logger.debug('Concatenating Segment audio', { segmentCount: fileList.length })
   await assembleBuildSegmentAudio({
-    segments: fileList.map((audio) => ({ audio })),
-    destination: { kind: 'file', inputDir: tmpDirPath, outputFile },
+    strategy: 'concat',
+    segments: fileList.map((audioFile) => ({ audioFile })),
+    inputDir: tmpDirPath,
+    outputFile,
   })
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
   const firstEngine = segments[0]?.engine || DEFAULT_ENGINE

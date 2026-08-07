@@ -24,6 +24,10 @@ _Avoid_: Chunk, slice, fragment
 A `Segment` with all TTS parameters resolved, ready to be sent to an engine's `synthesize()`.
 _Avoid_: Request, task item
 
+**Audio Assembly**:
+The boundary that turns ordered, generated Build Segment audio into one final audio output while remaining independent of Segment synthesis. Concat is its serial form.
+_Avoid_: Merge, join, combine
+
 **LLM Recommendation**:
 Using an LLM to analyze text and automatically assign voices and parameters to segments, replacing manual voice selection.
 _Avoid_: AI配音, auto-dubbing, smart voice

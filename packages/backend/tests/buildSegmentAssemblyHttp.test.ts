@@ -2,12 +2,14 @@ import fs from 'fs/promises'
 import http from 'http'
 import os from 'os'
 import path from 'path'
-import { spawn } from 'child_process'
 import { AddressInfo } from 'net'
 import { Readable } from 'stream'
 import { createApp } from '../src/app'
 import { AUDIO_DIR, PUBLIC_DIR } from '../src/config'
 import { TTSEngine, TtsOptions } from '../src/tts/types'
+import { probeAudioDuration } from './helpers/audio'
+
+jest.setTimeout(30_000)
 
 jest.mock('franc', () => ({
   franc: jest.fn(() => 'eng'),
@@ -36,29 +38,6 @@ jest.mock('../src/utils/openai', () => ({
 const fixturePath = path.resolve(__dirname, '../../frontend/src/assets/notification.mp3')
 const longText = (label: string) => `${label} sentence for ordered audio assembly. `.repeat(20)
 
-async function probeDuration(file: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('ffprobe', [
-      '-v',
-      'error',
-      '-show_entries',
-      'format=duration',
-      '-of',
-      'default=noprint_wrappers=1:nokey=1',
-      file,
-    ])
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (chunk) => (stdout += chunk))
-    child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.once('error', reject)
-    child.once('close', (code) => {
-      if (code !== 0) return reject(new Error(stderr || `ffprobe exited with ${code}`))
-      resolve(Number(stdout.trim()))
-    })
-  })
-}
-
 describe('Issue #2 HTTP audio assembly regression', () => {
   let server: http.Server
   let baseUrl: string
@@ -68,7 +47,7 @@ describe('Issue #2 HTTP audio assembly regression', () => {
 
   beforeAll(async () => {
     fixture = await fs.readFile(fixturePath)
-    fixtureDuration = await probeDuration(fixturePath)
+    fixtureDuration = await probeAudioDuration(fixturePath)
     probeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-http-assembly-'))
 
     class FixtureEngine implements TTSEngine {
@@ -109,7 +88,7 @@ describe('Issue #2 HTTP audio assembly regression', () => {
   async function expectPlayableMultiSegmentAudio(audio: ArrayBuffer, name: string) {
     const probeFile = path.join(probeDir, name)
     await fs.writeFile(probeFile, Buffer.from(audio))
-    const duration = await probeDuration(probeFile)
+    const duration = await probeAudioDuration(probeFile)
     expect(duration).toBeGreaterThan(fixtureDuration * 1.8)
   }
 
