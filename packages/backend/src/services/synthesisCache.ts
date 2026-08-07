@@ -57,6 +57,11 @@ export interface FinalAudioCacheIdentity {
   }>
 }
 
+export interface FinalAudioCacheDescriptor {
+  identity: FinalAudioCacheIdentity
+  key: string
+}
+
 export function createSynthesisCacheIdentity(
   input: SynthesisCacheInput
 ): SynthesisCacheIdentity {
@@ -118,8 +123,15 @@ export function createFinalAudioCacheIdentity(
 }
 
 export function createFinalAudioCacheKey(input: FinalAudioCacheInput): string {
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify(createFinalAudioCacheIdentity(input)))
-    .digest('hex')
+  return createFinalAudioCacheDescriptor(input).key
+}
+
+export function createFinalAudioCacheDescriptor(
+  input: FinalAudioCacheInput
+): FinalAudioCacheDescriptor {
+  const identity = createFinalAudioCacheIdentity(input)
+  return {
+    identity,
+    key: crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
+  }
 }

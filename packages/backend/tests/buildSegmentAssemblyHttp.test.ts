@@ -2,8 +2,10 @@ import fs from 'fs/promises'
 import http from 'http'
 import os from 'os'
 import path from 'path'
+import * as childProcess from 'child_process'
 import { AddressInfo } from 'net'
-import { Readable } from 'stream'
+import { EventEmitter } from 'events'
+import { PassThrough, Readable } from 'stream'
 import { createApp } from '../src/app'
 import { AUDIO_DIR, PUBLIC_DIR } from '../src/config'
 import { normalizeTtsRequest } from '../src/services/ttsRequest'
@@ -11,6 +13,13 @@ import * as textService from '../src/services/text.service'
 import { TTSEngine, TtsOptions } from '../src/tts/types'
 import taskManager from '../src/utils/taskManager'
 import { createStereoToneMp3, probeAudioDuration, probeStereoRms } from './helpers/audio'
+
+jest.mock('child_process', () => {
+  const actual = jest.requireActual<typeof import('child_process')>('child_process')
+  return { ...actual, spawn: jest.fn(actual.spawn) }
+})
+
+const actualSpawn = jest.requireActual<typeof import('child_process')>('child_process').spawn
 
 jest.setTimeout(30_000)
 
@@ -24,6 +33,22 @@ let mockCancelStreamStarted: (() => void) | undefined
 let mockCancelStreamDestroyed = false
 let mockOverlapMs = 400
 let mockDuckPreviousDb = -12
+let mockMediaFailure = false
+
+jest.mocked(childProcess.spawn).mockImplementation(((command: string, ...args: any[]) => {
+  if (!mockMediaFailure || command !== 'ffmpeg') {
+    return (actualSpawn as any)(command, ...args)
+  }
+  const child = new EventEmitter() as any
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.kill = jest.fn()
+  process.nextTick(() => {
+    child.stderr.end('deterministic media failure')
+    child.emit('close', 7)
+  })
+  return child
+}) as typeof childProcess.spawn)
 
 jest.mock('../src/utils/openai', () => ({
   openai: {
@@ -480,7 +505,7 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     expect(after).toEqual([])
   })
 
-  it('cancels Timeline Mix and removes its process files after disconnect', async () => {
+  it('cancels Timeline Mix, removes process files, and preserves reusable final cache', async () => {
     const request = {
       text: `CANCEL_MIX ${process.pid}`,
       voice: 'en-US-AriaNeural',
@@ -510,7 +535,8 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     const taskBody = await taskResponse.json()
     expect(taskBody.data).toEqual(expect.objectContaining({ status: 'cancelled' }))
     const after = (await fs.readdir(AUDIO_DIR)).filter((entry) => !before.has(entry))
-    expect(after).toEqual([])
+    expect(after.filter((entry) => entry.includes('.timeline-'))).toEqual([])
+    expect(after.filter((entry) => entry.endsWith('.mp3'))).toHaveLength(1)
   })
 
   it('matches /generate duration and overlap behavior for the same Build Segment timeline', async () => {
@@ -638,9 +664,18 @@ describe('Issue #2 HTTP audio assembly regression', () => {
       body: JSON.stringify(request),
     })
     const secondAudio = await secondResponse.arrayBuffer()
+    const cachedResponse = await fetch(`${baseUrl}/api/v1/tts/createStream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    const cachedAudio = await cachedResponse.arrayBuffer()
 
     expect(firstResponse.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
     expect(secondResponse.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
+    expect(cachedResponse.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
+    expect(cachedResponse.headers.get('content-type')).toContain('audio/mpeg')
+    expect(Buffer.from(cachedAudio)).toEqual(Buffer.from(secondAudio))
     expect(
       mockPipelineEvents.filter((event) => event.startsWith('synthesize:')).length
     ).toBe(synthesesAfterFirst)
@@ -657,4 +692,41 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     mockOverlapMs = 400
     mockDuckPreviousDb = -12
   })
+
+  it.each(['/generate', '/createStream'])(
+    'returns a safe failure and terminal state for injected media failure on %s',
+    async (route) => {
+      const source = `PRIVATE_MEDIA_FAILURE ${route} ${process.pid} ${Date.now()}`
+      const request = {
+        text: source,
+        voice: 'en-US-AriaNeural',
+        useLLM: true,
+        enableInterruptions: true,
+        openaiBaseUrl: 'https://example.test/v1',
+        openaiKey: 'PRIVATE_MEDIA_KEY',
+        openaiModel: 'fixture-model',
+      }
+      const taskId = taskManager.generateTaskId(normalizeTtsRequest(request))
+      mockMediaFailure = true
+      try {
+        const response = await fetch(`${baseUrl}/api/v1/tts${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        })
+        const responseBody = await response.text()
+
+        expect(response.status).toBe(500)
+        expect(responseBody).not.toContain(source)
+        expect(responseBody).not.toContain('PRIVATE_MEDIA_KEY')
+        if (route === '/createStream') {
+          const taskResponse = await fetch(`${baseUrl}/api/v1/tts/task/${taskId}`)
+          const taskBody = await taskResponse.json()
+          expect(taskBody.data).toEqual(expect.objectContaining({ status: 'failed' }))
+        }
+      } finally {
+        mockMediaFailure = false
+      }
+    }
+  )
 })

@@ -15,8 +15,7 @@ import audioCacheInstance from './audioCache.service'
 import { Task } from '../utils/taskManager'
 import { handleSrt } from './tts.stream.service'
 import {
-  createFinalAudioCacheIdentity,
-  createFinalAudioCacheKey,
+  createFinalAudioCacheDescriptor,
   createSynthesisCacheKey,
 } from './synthesisCache'
 import { resolveRecommendationVoices } from './recommendationVoices'
@@ -351,23 +350,17 @@ async function buildSegmentList(
   if (!length) {
     throw new Error(`No segments found for task ${task?.id || 'unknown'}!`)
   }
-  const finalCacheIdentity = createFinalAudioCacheIdentity({
+  const finalCache = createFinalAudioCacheDescriptor({
     enableInterruptions,
     segments,
     sourceText: segment.text,
     recommendationModel,
   })
-  const finalCacheKey = createFinalAudioCacheKey({
-    enableInterruptions,
-    segments,
-    sourceText: segment.text,
-    recommendationModel,
-  })
-  const finalCache = await audioCacheInstance.getAudio(finalCacheKey)
-  if (finalCache) {
+  const cachedFinalAudio = await audioCacheInstance.getAudio(finalCache.key)
+  if (cachedFinalAudio) {
     diagnostics.segmentCount = length
-    diagnostics.generationMode = finalCacheIdentity.mode
-    diagnostics.effectiveInterruptionCount = finalCacheIdentity.timeline.filter(
+    diagnostics.generationMode = finalCache.identity.mode
+    diagnostics.effectiveInterruptionCount = finalCache.identity.timeline.filter(
       (item) => item.interrupt
     ).length
     logger.info('Final Audio Assembly cache hit', {
@@ -375,16 +368,12 @@ async function buildSegmentList(
       effectiveInterruptionCount: diagnostics.effectiveInterruptionCount,
       segmentCount: length,
     })
-    return finalCache
+    return cachedFinalAudio
   }
   const { id } = segment
   const tmpDirName = id.replace('.mp3', '')
   const tmpDirPath = path.resolve(AUDIO_DIR, tmpDirName)
   await ensureDir(tmpDirPath)
-  await fs.writeFile(
-    path.resolve(tmpDirPath, 'ai-segments.json'),
-    JSON.stringify(segments, null, 2)
-  )
   const getProgress = () => {
     return Number((((handledLength / length) * 100) / (id.includes('segment') ? 2 : 1)).toFixed(2))
   }
@@ -445,42 +434,52 @@ async function buildSegmentList(
     strategy: hasEffectiveInterruption ? 'timeline-mix' : 'concat',
   })
   let segmentStartsMs: number[] | undefined
-  if (hasEffectiveInterruption) {
-    diagnostics.generationMode = 'timeline-mix'
-    diagnostics.effectiveInterruptionCount = generatedSegments.filter(
-      (segment, index) => index > 0 && segment.interrupt && segment.overlapMs > 0
-    ).length
-    const timelineResult = await assembleBuildSegmentAudio({
-      strategy: 'timeline-mix',
-      segments: generatedSegments,
-      inputRoot: AUDIO_DIR,
-      outputFile,
-    })
-    segmentStartsMs = timelineResult.segmentStartsMs
-    diagnostics.mixDurationMs = timelineResult.mixDurationMs
-  } else {
-    diagnostics.generationMode = 'concat'
-    await assembleBuildSegmentAudio({
-      strategy: 'concat',
-      segments: generatedSegments,
-      inputDir: tmpDirPath,
-      outputFile,
-    })
-  }
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
   const supportsSubtitles = results.every((result, index) => {
     if (!result.success) return true
     const engine = ttsPluginManager.getEngine(segments[index]?.engine || DEFAULT_ENGINE)
     return engine?.supportsSubtitles !== false
   })
-  if (supportsSubtitles) {
-    await assembleBuildSegmentSubtitles({
-      inputDir: tmpDirPath,
-      audioFiles: fileList,
-      outputFile,
-      segmentStartsMs,
-    })
-    logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
+  try {
+    if (hasEffectiveInterruption) {
+      diagnostics.generationMode = 'timeline-mix'
+      diagnostics.effectiveInterruptionCount = finalCache.identity.timeline.filter(
+        (item) => item.interrupt
+      ).length
+      const timelineResult = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: generatedSegments,
+        inputRoot: AUDIO_DIR,
+        outputFile,
+      })
+      segmentStartsMs = timelineResult.segmentStartsMs
+      diagnostics.mixDurationMs = timelineResult.mixDurationMs
+    } else {
+      diagnostics.generationMode = 'concat'
+      await assembleBuildSegmentAudio({
+        strategy: 'concat',
+        segments: generatedSegments,
+        inputDir: tmpDirPath,
+        outputFile,
+      })
+    }
+    if (supportsSubtitles) {
+      await assembleBuildSegmentSubtitles({
+        inputDir: tmpDirPath,
+        audioFiles: fileList,
+        outputFile,
+        segmentStartsMs,
+      })
+      logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
+    }
+  } catch (error) {
+    await Promise.all([
+      fs.unlink(outputFile).catch(() => undefined),
+      fs.unlink(outputFile.replace('.mp3', '.srt')).catch(() => undefined),
+      fs.unlink(path.resolve(tmpDirPath, 'all_splits.mp3.json')).catch(() => undefined),
+    ])
+    await fs.rmdir(tmpDirPath).catch(() => undefined)
+    throw error
   }
 
   const result = {
@@ -489,7 +488,7 @@ async function buildSegmentList(
     partial,
   }
   if (!partial) {
-    await audioCacheInstance.setAudio(finalCacheKey, { ...segments[0], ...result })
+    await audioCacheInstance.setAudio(finalCache.key, { ...segments[0], ...result })
   }
   return result
 }
