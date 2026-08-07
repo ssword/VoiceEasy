@@ -25,6 +25,8 @@ import { mergeSubtitleFiles, SubtitleFile, SubtitleFiles } from '../utils/subtit
 import taskManager, { Task } from '../utils/taskManager'
 import { Readable, PassThrough } from 'stream'
 import { createSynthesisCacheKey } from './synthesisCache'
+import { resolveRecommendationVoices } from './recommendationVoices'
+import { audioByteLength, generationRuntimeMetadata } from '../utils/diagnostics'
 
 // 错误消息枚举
 enum ErrorMessages {
@@ -46,17 +48,7 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
   const { lang, voiceList } = await getLangConfig(segment.text)
   logger.debug(`Language detected lang: `, lang)
 
-  // Resolve engine-specific voice list for non-default engines
-  let effectiveVoiceList = voiceList
-  if (engine && engine !== DEFAULT_ENGINE) {
-    const engineInstance = ttsPluginManager.getEngine(engine)
-    if (engineInstance?.getVoiceOptions) {
-      const engineVoices = await engineInstance.getVoiceOptions()
-      effectiveVoiceList = engineVoices.map((voice) =>
-        typeof voice === 'string' ? ({ Name: voice } as VoiceConfig) : (voice as VoiceConfig)
-      )
-    }
-  }
+  const effectiveVoiceList = await resolveRecommendationVoices(engine, voiceList)
 
   task!.context!.segment = segment
   task!.context!.lang = lang
@@ -82,11 +74,16 @@ export async function generateTTSStream(params: Required<EdgeSchema>, task: Task
       srt: path.parse(cache.srt).base,
       text: '',
     }
-    logger.info(`Cache hit: ${voice} ${text.slice(0, 10)}`)
+    logger.info('TTS stream cache hit', { engine, voice, textLength: text.length })
+    if (task.context?.diagnostics) {
+      task.context.diagnostics.segmentCount = 1
+      task.context.diagnostics.audioBytes = await audioByteLength(AUDIO_DIR, cache.audio)
+    }
     task.context?.res?.setHeader('x-generate-tts-type', 'application/json')
     task.context?.res?.setHeader('Access-Control-Expose-Headers', 'x-generate-tts-type')
     task.context?.res?.json({ code: 200, data, success: true })
     task.endTask?.(task.id)
+    logStreamCompletion(task, task.context?.res)
     return
   }
 
@@ -102,7 +99,6 @@ export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[]
   const segments = formatedBody
   logger.info(`generateTTSStreamJson splitText length: ${formatedBody.length} `)
   const buildSegments = segments.map((segment) => ({ ...segment, output }))
-  logger.info('buildSegments:', buildSegments)
   await buildSegmentList(buildSegments, task)
 }
 
@@ -123,7 +119,6 @@ async function generateWithLLMStream(task: Task) {
       }))
   if (length <= 1) {
     const prompt = getPrompt(lang, voiceList, segments[0], engine)
-    logger.debug(`Prompt for LLM: ${prompt}`)
     const llmResponse = await fetchLLMSegment(prompt)
     let llmSegments = llmResponse?.result || llmResponse?.segments || []
     if (!Array.isArray(llmSegments)) {
@@ -132,7 +127,13 @@ async function generateWithLLMStream(task: Task) {
       )
     }
     const formattedSegments = formatLlmSegments(llmSegments)
-    logger.info(`AI 推荐分段结果 (${engine}):\n${JSON.stringify(formattedSegments, null, 2)}`)
+    if (task.context?.diagnostics) {
+      task.context.diagnostics.segmentCount = formattedSegments.length
+    }
+    logger.info('Streaming LLM Recommendation segmented content', {
+      engine,
+      segmentCount: formattedSegments.length,
+    })
     await buildSegmentList(formattedSegments, task)
   } else {
     const output = resolve(AUDIO_DIR, id)
@@ -157,7 +158,6 @@ async function generateWithLLMStream(task: Task) {
     for (let seg of segments) {
       count++
       const prompt = getPrompt(lang, voiceList, seg, engine)
-      logger.debug(`Prompt for LLM: ${prompt}`)
       const llmResponse = await fetchLLMSegment(prompt)
       let llmSegments = llmResponse?.result || llmResponse?.segments || []
       if (!Array.isArray(llmSegments)) {
@@ -166,9 +166,15 @@ async function generateWithLLMStream(task: Task) {
         )
       }
       const llmFormatted = formatLlmSegments(llmSegments)
-      logger.info(
-        `AI 推荐分段结果[${count}/${segments.length}] (${engine}):\n${JSON.stringify(llmFormatted, null, 2)}`
-      )
+      if (task.context?.diagnostics) {
+        task.context.diagnostics.segmentCount += llmFormatted.length
+      }
+      logger.info('Streaming LLM Recommendation segmented content', {
+        engine,
+        batch: count,
+        batchCount: segments.length,
+        segmentCount: llmFormatted.length,
+      })
       for (let segment of llmFormatted) {
         const stream = (await generateSingleVoiceStream({
           ...segment,
@@ -216,6 +222,7 @@ async function generateWithoutLLMStream(params: TTSParams, task: Task) {
   const { segment } = task.context as Required<NonNullable<Task['context']>>
   const { text } = segment
   const { length, segments } = splitText(text)
+  if (task.context?.diagnostics) task.context.diagnostics.segmentCount = length
   logger.info(`splitText length: ${length} `)
   if (length <= 1) {
     await buildSegment(params, task)
@@ -278,6 +285,9 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   const { res, segment } = task.context as Required<NonNullable<Task['context']>>
   const { id: outputId } = segment
   const totalSegments = segments.length
+  if (task.context?.diagnostics && task.context.diagnostics.segmentCount === 0) {
+    task.context.diagnostics.segmentCount = totalSegments
+  }
   const output = path.resolve(AUDIO_DIR, outputId)
   let completedSegments = 0
   if (!totalSegments) {
@@ -322,9 +332,13 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
         if (attempt + 1 >= maxRetries) {
           throw Object.assign(error, { segmentIndex: index, attempt: attempt + 1 } as SegmentError)
         }
-        logger.warn(
-          `Segment ${index + 1} failed (attempt ${attempt + 1}/${maxRetries}): ${error.message}`
-        )
+        if (task.context?.diagnostics) task.context.diagnostics.retryCount++
+        logger.warn('Segment synthesis attempt failed', {
+          engine: segment.engine,
+          segmentIndex: index,
+          attempt: attempt + 1,
+          maxRetries,
+        })
         await asyncSleep(1000)
         return generateWithRetry(attempt + 1)
       }
@@ -339,12 +353,14 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
         audioStream.once('error', reject)
       })
       completedSegments++
-      logger.info(`processing text:\n ${segment.text.slice(0, 10)}...`)
       logger.info(`Segment ${index + 1}/${totalSegments} completed. Progress: ${progress()}%`)
       await processSegment(index + 1)
     } catch (err) {
       const { segmentIndex, attempt, message } = err as SegmentError
-      logger.error(`Segment ${segmentIndex + 1} failed after ${attempt} retries: ${message}`)
+      logger.error('Segment synthesis failed', {
+        segmentIndex,
+        retryCount: Math.max(0, attempt - 1),
+      })
       outputStream.emit('error', err)
     }
   }
@@ -352,7 +368,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   try {
     await processSegment(0)
   } catch (err) {
-    logger.error(`Audio processing aborted: ${(err as Error).message}`)
+    logger.error('Audio processing aborted')
     !res.headersSent && res.status(500).end('Internal server error')
   }
 }
@@ -363,6 +379,13 @@ function streamTaskToResponse(
   options: { fileName: string; onCompleted?: () => void }
 ) {
   const { res } = task.context as Required<NonNullable<Task['context']>>
+  input.on('data', (chunk) => {
+    if (task.context?.diagnostics) {
+      task.context.diagnostics.audioBytes += Buffer.isBuffer(chunk)
+        ? chunk.length
+        : Buffer.byteLength(String(chunk))
+    }
+  })
   streamToResponse(res, input, {
     headers: {
       'content-type': 'application/octet-stream',
@@ -377,13 +400,24 @@ function streamTaskToResponse(
     },
     onEnd: () => {
       taskManager.finishTask(task.id, task)
-      logger.info(`Streaming ${task.id} finished`)
+      logStreamCompletion(task, res)
       options.onCompleted?.()
     },
     onClose: () => {
       taskManager.cancelTask(task.id, 'Client disconnected', task)
       logger.info(`Streaming ${task.id} cancelled after client disconnect`)
     },
+  })
+}
+
+function logStreamCompletion(task: Task, res?: Response) {
+  const diagnostics = task.context?.diagnostics
+  logger.info('TTS stream completed', {
+    correlationId: res?.locals?.correlationId || task.id,
+    taskId: task.id,
+    engine: task.context?.engine || task.fields?.engine,
+    model: task.fields?.recommendationModel || '',
+    ...generationRuntimeMetadata(diagnostics),
   })
 }
 
@@ -397,7 +431,6 @@ async function runConcurrentTasks(tasks: (() => Promise<any>)[], limit: number):
   )
   const { results, cancelled } = await controller.run()
   logger.info(`Tasks completed: ${results.length}, cancelled: ${cancelled}`)
-  logger.debug(`Task results:`, results)
   return results
 }
 

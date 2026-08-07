@@ -22,7 +22,6 @@ function splitTextBySemantics(
   const separator = sentenceSeparators[detectedLang] || sentenceSeparators['default']
   const isEng = detectedLang === 'eng'
   const isZH = detectedLang === 'cmn' || detectedLang === 'zho' || detectedLang === 'zh'
-  console.log(`detectedLang:`, detectedLang)
   if (isZH) {
     minLength = 200
     maxLength = 400
@@ -34,7 +33,6 @@ function splitTextBySemantics(
   // 按段落分割
   const paragraphs = text.split('\n').filter((p) => p.trim().length > 0)
   let currentChunk = ''
-  console.log(paragraphs)
   for (const paragraph of paragraphs) {
     if (paragraph.length > maxLength) {
       const sentences =
@@ -129,7 +127,5 @@ This is an English paragraph. It has multiple sentences and might need splitting
 `
 
   const chunks = splitTextBySemantics(longText)
-  chunks.forEach((chunk, index) => {
-    console.log(`Chunk ${index + 1} (${chunk.length} chars): ${chunk}`)
-  })
+  console.log(`Created ${chunks.length} semantic chunks`)
 }

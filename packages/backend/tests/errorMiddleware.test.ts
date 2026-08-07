@@ -21,7 +21,20 @@ describe('errorHandler logging', () => {
     expect(redactSecrets(Buffer.from([0x49, 0x44, 0x33]))).toBe('[Buffer 3 bytes]')
   })
 
-  it('keeps request text while recursively redacting credentials', () => {
+  it('defensively redacts content fields and Error messages', () => {
+    const redacted = redactSecrets({
+      text: 'PRIVATE_SOURCE_TEXT',
+      prompt: 'PRIVATE_PROMPT',
+      segments: [{ text: 'PRIVATE_SEGMENT' }],
+      error: new Error('PRIVATE_ERROR_MESSAGE'),
+    })
+
+    expect(JSON.stringify(redacted)).not.toMatch(
+      /PRIVATE_SOURCE_TEXT|PRIVATE_PROMPT|PRIVATE_SEGMENT|PRIVATE_ERROR_MESSAGE/
+    )
+  })
+
+  it('logs only safe request and error metadata', () => {
     const req = {
       method: 'POST',
       url: '/api/v1/tts/createStream',
@@ -46,10 +59,13 @@ describe('errorHandler logging', () => {
     errorHandler(new Error('LLM failed'), req, res, jest.fn() as NextFunction)
 
     const logged = JSON.stringify(jest.mocked(logger.error).mock.calls[0])
-    expect(logged).toContain('医生：您好')
+    expect(logged).not.toContain('医生：您好')
     expect(logged).not.toContain('llm-secret')
     expect(logged).not.toContain('header-secret')
     expect(logged).not.toContain('nested-secret')
-    expect(logged).toContain('[REDACTED]')
+    expect(logged).toContain('POST')
+    expect(logged).toContain('textLength')
+    expect(logged).toContain('textHash')
+    expect(logged).toContain('Error')
   })
 })

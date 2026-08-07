@@ -8,6 +8,12 @@ A scalable, enterprise-grade Text-to-Speech service built with Express, TypeScri
 - DTO validation using `class-validator`
 - Prometheus metrics for performance monitoring
 - Comprehensive logging with Winston
+
+Runtime logs contain diagnostic metadata only (correlation ID, Engine Plugin, model,
+content length/hash, Segment counts, timing, retries, and audio byte counts). Source
+text, Prompts, LLM output, credentials, request bodies, streams, and binary payloads
+are not logged. Setting `DEBUG` enables additional operational events but does not
+enable content logging.
 - Unit and integration tests with Jest
 - Dockerized deployment with health checks
 

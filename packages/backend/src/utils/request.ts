@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios'
 import { logger } from './logger'
+import { safeErrorMetadata } from './diagnostics'
 
 // 定义响应数据的通用接口
 export interface ResponseData<T> extends AxiosResponse {
@@ -29,11 +30,14 @@ instance.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
-    logger.info(`Request started: ${config.method?.toUpperCase()} ${config.url}`)
+    logger.info('Upstream request started', {
+      method: config.method?.toUpperCase(),
+      path: config.url?.split('?')[0],
+    })
     return config
   },
   (error) => {
-    logger.error('Request interceptor error:', error)
+    logger.error('Request interceptor failed', { error: safeErrorMetadata(error) })
     return Promise.reject(error)
   }
 )
@@ -48,7 +52,11 @@ instance.interceptors.response.use(
       }
       return Promise.reject(new Error(data.message || 'Request failed'))
     }
-    logger.info(`Request succeeded: ${response.config.url}`)
+    logger.info('Upstream request succeeded', {
+      method: response.config.method?.toUpperCase(),
+      path: response.config.url?.split('?')[0],
+      status: response.status,
+    })
     return response
   },
   (error) => {
@@ -56,32 +64,25 @@ instance.interceptors.response.use(
     const url = config.url || 'unknown URL'
 
     if (error.response) {
-      const { status, data } = error.response
-      let responseBody: string
-      if (typeof data === 'string') {
-        // Only show first 300 chars, and only if it looks like text (not binary)
-        const preview = data.slice(0, 300)
-        responseBody = /^[\x20-\x7e\u4e00-\u9fff\n\r\t{}[\]":,]+/.test(preview)
-          ? preview
-          : `[Binary/encoded data ${data.length} bytes]`
-      } else if (Buffer.isBuffer(data)) {
-        responseBody = `[Buffer ${data.length} bytes]`
-      } else if (data && typeof data === 'object' && data.pipe) {
-        responseBody = `[ReadableStream]`
-      } else if (data && typeof data === 'object') {
-        try {
-          responseBody = JSON.stringify(data).slice(0, 500)
-        } catch {
-          responseBody = `[Object]`
-        }
-      } else {
-        responseBody = String(data).slice(0, 200)
-      }
-      logger.error(`HTTP ${status} ${config.method?.toUpperCase()} ${url}: ${responseBody}`)
+      const { status } = error.response
+      logger.error('Upstream HTTP request failed', {
+        status,
+        method: config.method?.toUpperCase(),
+        path: url.split('?')[0],
+        error: safeErrorMetadata(error),
+      })
     } else if (error.code === 'ECONNABORTED') {
-      logger.error(`Timeout: ${config.method?.toUpperCase()} ${url}`)
+      logger.error('Upstream request timed out', {
+        method: config.method?.toUpperCase(),
+        path: url.split('?')[0],
+        error: safeErrorMetadata(error),
+      })
     } else {
-      logger.error(`Network error: ${config.method?.toUpperCase()} ${url} — ${error.message}`)
+      logger.error('Upstream network request failed', {
+        method: config.method?.toUpperCase(),
+        path: url.split('?')[0],
+        error: safeErrorMetadata(error),
+      })
     }
     return Promise.reject(error)
   }
@@ -94,10 +95,12 @@ const _request = async <T = any>(config: CustomConfig): Promise<ResponseData<T>>
   } catch (error: any) {
     const logError = config.logError ?? true
     if (logError) {
-      const msg = error?.response?.status
-        ? `Request failed: ${config.url} [${error.response.status}] ${error.message}`
-        : `Request failed: ${config.url || 'unknown URL'} — ${error.message}`
-      logger.error(msg)
+      logger.error('Upstream request failed', {
+        method: config.method?.toUpperCase(),
+        path: config.url?.split('?')[0] || 'unknown URL',
+        status: error?.response?.status,
+        error: safeErrorMetadata(error),
+      })
     }
     throw error
   }

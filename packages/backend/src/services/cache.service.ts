@@ -2,6 +2,7 @@ import { BaseStorage } from '../storage/baseStorage'
 import { MemoryStorage } from '../storage/memoryStorage'
 import { FileStorage } from '../storage/fileStorage'
 import { logger } from '../utils/logger'
+import { safeErrorMetadata } from '../utils/diagnostics'
 // import { RedisStorage } from '../storage/redisStorage'; // 可选 Redis 实现
 
 export interface CacheOptions {
@@ -74,7 +75,7 @@ class CacheService {
       logger.debug(`CacheSerive hit cache: ${key}`)
       return item.value
     } catch (err) {
-      logger.warn(`CacheSerive get cache error: ${(err as Error).message}`, { str })
+      logger.warn('CacheService get failed', { error: safeErrorMetadata(err) })
       return null
     }
   }

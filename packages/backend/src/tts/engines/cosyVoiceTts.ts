@@ -107,7 +107,9 @@ export class CosyVoiceTtsEngine implements TTSEngine {
       { stdio: ['pipe', 'pipe', 'pipe'] }
     )
     pcm.pipe(ffmpeg.stdin!)
-    ffmpeg.stderr?.on('data', (data: Buffer) => logger.debug(`[CosyVoice] ffmpeg: ${data.toString().trim()}`))
+    ffmpeg.stderr?.on('data', (data: Buffer) =>
+      logger.debug('[CosyVoice] ffmpeg diagnostic output', { byteLength: data.length })
+    )
     const output = new PassThrough()
     let outputBytes = 0
     let settled = false

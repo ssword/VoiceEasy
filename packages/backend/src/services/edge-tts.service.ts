@@ -2,6 +2,8 @@ import fs from 'fs/promises'
 import { fileExist, readJson, safeRunWithRetry } from '../utils'
 import { ttsPluginManager } from '../tts/pluginManager'
 import { DEFAULT_ENGINE } from '../config'
+import { logger } from '../utils/logger'
+import { safeErrorMetadata } from '../utils/diagnostics'
 
 export const generateSingleVoice = async (params: {
   text: string
@@ -12,8 +14,19 @@ export const generateSingleVoice = async (params: {
   output: string
   engine?: string
   instruction?: string
+  onRetry?: (attempt: number) => void
 }) => {
-  const { text, pitch, voice, rate, volume, output, engine = DEFAULT_ENGINE, instruction } = params
+  const {
+    text,
+    pitch,
+    voice,
+    rate,
+    volume,
+    output,
+    engine = DEFAULT_ENGINE,
+    instruction,
+    onRetry,
+  } = params
   let result: TTSResult = {
     audio: '',
     srt: '',
@@ -41,7 +54,7 @@ export const generateSingleVoice = async (params: {
         srt: output.replace('.mp3', '.srt'),
       }
     },
-    { retries: 5 }
+    { retries: 5, onRetry }
   )
   return result!
 }
@@ -128,17 +141,17 @@ export const jsonToSrt = async (jsonPath: string) => {
 
 export const generateSrt = async (jsonPath: string, srtPath: string, deleteJson = false) => {
   if (await fileExist(srtPath)) {
-    console.log(`SRT file already exists at ${srtPath}`)
+    logger.debug('SRT file already exists')
     return
   }
   try {
     const srtTxt = await jsonToSrt(jsonPath)
     await fs.writeFile(srtPath, srtTxt, 'utf8')
-    console.log(`SRT file created at ${srtPath}`)
+    logger.debug('SRT file created')
     if (deleteJson) await fs.unlink(jsonPath)
     return srtPath
   } catch (err) {
-    console.error(`Error reading JSON file at ${jsonPath}:`, err)
+    logger.error('SRT generation failed', { error: safeErrorMetadata(err) })
     return
   }
 }

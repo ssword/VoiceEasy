@@ -101,7 +101,7 @@ const commonValidate = (req: Request, res: Response, next: NextFunction, schema:
 export const validateEdge = (req: Request, res: Response, next: NextFunction) => {
   const body = req.body
   const isGenerate = req.url.includes('/generate')
-  logger.info(`validateEdge`, body, req.url)
+  logger.debug('Validating TTS request', { path: req.url.split('?')[0] })
   if (isGenerate && body.text?.length > DIRECT_GEN_LIMIT) {
     res.status(400).json({
       code: 400,
@@ -115,7 +115,10 @@ export const validateEdge = (req: Request, res: Response, next: NextFunction) =>
 export const validateLLM = (req: Request, res: Response, next: NextFunction) => {
   const { useLLM, text } = req.body
   const isGenerate = req.url.includes('/generate')
-  logger.info(`validateLLM`, useLLM, req.url)
+  logger.debug('Validating LLM Recommendation request', {
+    useLLM,
+    path: req.url.split('?')[0],
+  })
   if (isGenerate && useLLM && text?.length > DIRECT_GEN_LIMIT) {
     res.status(400).json({
       code: 400,

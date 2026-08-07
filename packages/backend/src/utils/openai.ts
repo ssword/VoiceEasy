@@ -2,6 +2,7 @@ import { AxiosError } from 'axios'
 import { MODEL_NAME, OPENAI_BASE_URL, OPENAI_API_KEY, OPENAI_TIMEOUT_MS } from '../config'
 import { logger } from './logger'
 import { fetcher } from './request'
+import { safeErrorMetadata } from './diagnostics'
 
 // 配置接口定义
 interface OpenAIConfig {
@@ -24,8 +25,10 @@ export function createOpenAIClient() {
     apiKey: OPENAI_API_KEY,
   }
   logger.debug(`init openai with: `, {
-    ...currentConfig,
-    apiKey: currentConfig?.apiKey ? '[REDACTED]' : undefined,
+    model: currentConfig.model,
+    timeout: currentConfig.timeout,
+    hasBaseUrl: !!currentConfig.baseURL,
+    hasApiKey: !!currentConfig.apiKey,
   })
   // 设置 headers
   const getHeaders = () => ({
@@ -42,6 +45,7 @@ export function createOpenAIClient() {
     request: ChatCompletionRequest,
     customConfig?: Partial<OpenAIConfig>
   ): Promise<ChatCompletionResponse> {
+    const startedAt = Date.now()
     try {
       const mergedConfig = {
         ...currentConfig,
@@ -64,21 +68,29 @@ export function createOpenAIClient() {
         }
       )
 
-      // Log LLM request/response summary
       const requestModel = request.model || mergedConfig.model
       const lastMsg = request.messages?.[request.messages.length - 1]
-      const promptPreview = typeof lastMsg?.content === 'string' ? lastMsg.content.slice(0, 150) : ''
-      logger.info(`LLM → ${requestModel} | ${promptPreview}...`)
       const responseContent = response.data?.choices?.[0]?.message?.content
-      const resStr = typeof responseContent === 'string' ? responseContent : JSON.stringify(responseContent)
-      logger.info(`LLM ← ${requestModel} | tokens:${response.data?.usage?.total_tokens ?? '?'} | ${resStr.slice(0, 500)}`)
-      logger.debug(`LLM ← full content:\n${resStr}`)
+      const resStr =
+        typeof responseContent === 'string' ? responseContent : JSON.stringify(responseContent) || ''
+      logger.info('LLM Recommendation completed', {
+        model: requestModel,
+        promptLength: typeof lastMsg?.content === 'string' ? lastMsg.content.length : 0,
+        responseLength: resStr.length,
+        tokenCount: response.data?.usage?.total_tokens,
+        durationMs: Date.now() - startedAt,
+        retryCount: 0,
+      })
 
       return response.data
     } catch (error) {
-      if (error instanceof AxiosError) {
-        logger.error(`LLM error: ${error.response?.status} ${JSON.stringify(error.response?.data?.error || error.message).slice(0, 300)}`)
-      }
+      logger.error('LLM Recommendation failed', {
+        durationMs: Date.now() - startedAt,
+        error: safeErrorMetadata(error),
+        ...(error instanceof AxiosError && error.response?.status
+          ? { status: error.response.status }
+          : {}),
+      })
       throw new Error(
         `Chat completion request failed: ${error instanceof Error ? error.message : String(error)}`
       )
@@ -116,8 +128,10 @@ export function createOpenAIClient() {
       ...newConfig,
     }
     logger.debug(`openai currentConfig:`, {
-      ...currentConfig,
-      apiKey: currentConfig.apiKey ? '[REDACTED]' : undefined,
+      model: currentConfig.model,
+      timeout: currentConfig.timeout,
+      hasBaseUrl: !!currentConfig.baseURL,
+      hasApiKey: !!currentConfig.apiKey,
     })
   }
 

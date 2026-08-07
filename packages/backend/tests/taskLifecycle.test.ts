@@ -6,6 +6,17 @@ import { AUDIO_DIR, PUBLIC_DIR } from '../src/config'
 import { TTSEngine, TtsOptions } from '../src/tts/types'
 import taskManager from '../src/utils/taskManager'
 import { openai } from '../src/utils/openai'
+import { logger } from '../src/utils/logger'
+
+jest.mock('../src/utils/logger', () => ({
+  logger: {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    log: jest.fn(),
+  },
+}))
 
 jest.mock('franc', () => ({
   franc: jest.fn(() => 'eng'),
@@ -48,6 +59,7 @@ describe('Ticket 02 — streaming Task lifecycle', () => {
   let baseUrl: string
 
   beforeEach((done) => {
+    jest.clearAllMocks()
     taskManager.tasks.clear()
     engine = new ControlledEngine()
     const app = createApp({
@@ -110,6 +122,7 @@ describe('Ticket 02 — streaming Task lifecycle', () => {
     const repeatedResponse = await repeatedResponsePromise
     expect(repeatedResponse.status).toBe(200)
     await repeatedResponse.arrayBuffer()
+    expect(JSON.stringify(jest.mocked(logger.info).mock.calls)).toContain('"segmentCount":1')
   })
 
   it('marks an upstream stream error as failed and never overwrites that terminal state', async () => {
@@ -197,6 +210,16 @@ describe('Ticket 02 — streaming Task lifecycle', () => {
     engine.streams[0].end()
     engine.streams[1].end()
     await Promise.all([firstResponse.arrayBuffer(), secondResponse.arrayBuffer()])
+
+    const logs = JSON.stringify(jest.mocked(logger.info).mock.calls)
+    expect(logs).not.toContain('test-key')
+    expect(logs).not.toContain('Model-specific recommendation output.')
+    expect(logs).toContain('TTS stream completed')
+    expect(logs).toContain('recommendation-model-a')
+    expect(logs).toContain('segmentCount')
+    expect(logs).toContain('durationMs')
+    expect(logs).toContain('retryCount')
+    expect(logs).toContain('audioBytes')
   })
 
   it('completes a long-text LLM stream and accepts the identical content again', async () => {

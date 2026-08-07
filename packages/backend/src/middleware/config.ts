@@ -2,7 +2,7 @@ import cors from 'cors'
 import helmet from 'helmet'
 import { rateLimit as RateLimit } from 'express-rate-limit'
 import express, { Request, Response, NextFunction } from 'express'
-import { requestLoggerMiddleware } from './info.middleware'
+import { correlationIdMiddleware, requestLoggerMiddleware } from './info.middleware'
 import { USE_HELMET, USE_LIMIT } from '../config'
 
 interface MiddlewareConfig {
@@ -37,6 +37,7 @@ export function createMiddlewareConfig({ isDev, rateLimit, rateLimitWindow }: Mi
   return {
     cors: cors(),
     json: express.json({ limit: '20mb' }),
+    correlationId: correlationIdMiddleware,
     requestLogger: requestLoggerMiddleware,
     helmet: USE_HELMET ? useHelmet : pass,
     limiter: USE_LIMIT ? useLimiter : pass,

@@ -28,7 +28,9 @@ describe('streamToResponse error logging', () => {
     input.emit('error', error)
 
     expect(output.status).toHaveBeenCalledWith(500)
-    expect(logger.error).toHaveBeenCalledWith('Input stream error: TTS request failed')
+    expect(logger.error).toHaveBeenCalledWith('Input stream error', {
+      error: { name: 'Error' },
+    })
     expect(logger.error).not.toHaveBeenCalledWith(expect.anything(), error)
 
     output.destroy()

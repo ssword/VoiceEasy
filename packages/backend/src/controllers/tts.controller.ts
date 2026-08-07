@@ -8,14 +8,25 @@ import taskManager from '../utils/taskManager'
 import { ttsPluginManager } from '../tts/pluginManager'
 import { getPublicVoiceOptions } from '../tts/voiceOptions'
 import { normalizeTtsRequest } from '../services/ttsRequest'
+import {
+  audioByteLength,
+  createGenerationDiagnostics,
+  generationRuntimeMetadata,
+  safeErrorMetadata,
+  ttsRequestMetadata,
+} from '../utils/diagnostics'
 export async function createTask(req: Request, res: Response, next: NextFunction) {
+  const generationDiagnostics = createGenerationDiagnostics()
   try {
-    logger.debug('Generating audio with body:', req.body)
     const formattedBody = normalizeTtsRequest(req.body)
     const task = taskManager.createTask(formattedBody)
-    logger.info(`Generated task ID: ${task.id}`)
+    const diagnostics = {
+      ...ttsRequestMetadata(req.body, res, task.id),
+      taskId: task.id,
+    }
+    logger.info('TTS task accepted', diagnostics)
 
-    generateTTS(formattedBody, task)
+    generateTTS(formattedBody, task, generationDiagnostics)
       .then((result) => {
         const data = {
           ...result,
@@ -23,13 +34,23 @@ export async function createTask(req: Request, res: Response, next: NextFunction
           srt: path.parse(result.srt).base,
         }
         taskManager.updateTask(task.id, { result: data }, task)
-        logger.info(`Updated task ID: ${task.id} with result`, result)
+        void audioByteLength(AUDIO_DIR, result.audio).then((audioBytes) =>
+          logger.info('TTS task completed', {
+            ...diagnostics,
+            ...generationRuntimeMetadata(generationDiagnostics, { audioBytes }),
+          })
+        )
       })
       .catch((err) => {
         const data = {
           message: (err as Error).message,
         }
         taskManager.failTask(task.id, data, task)
+        logger.error('TTS task failed', {
+          ...diagnostics,
+          ...generationRuntimeMetadata(generationDiagnostics),
+          error: safeErrorMetadata(err),
+        })
       })
     const data = {
       success: true,
@@ -78,10 +99,12 @@ export async function getTaskStats(_req: Request, res: Response, next: NextFunct
   }
 }
 export async function generateAudio(req: Request, res: Response, next: NextFunction) {
+  const generationDiagnostics = createGenerationDiagnostics()
   try {
-    logger.debug('Generating audio with body:', req.body)
     const formattedBody = normalizeTtsRequest(req.body)
-    let result = await generateTTS(formattedBody)
+    const diagnostics = ttsRequestMetadata(req.body, res)
+    logger.info('Direct TTS request accepted', diagnostics)
+    let result = await generateTTS(formattedBody, undefined, generationDiagnostics)
     const responseResult = {
       success: true,
       data: {
@@ -91,8 +114,19 @@ export async function generateAudio(req: Request, res: Response, next: NextFunct
       },
       code: 200,
     }
+    logger.info('Direct TTS request completed', {
+      ...diagnostics,
+      ...generationRuntimeMetadata(generationDiagnostics, {
+        audioBytes: await audioByteLength(AUDIO_DIR, result.audio),
+      }),
+    })
     res.json(responseResult)
   } catch (error) {
+    logger.error('Direct TTS request failed', {
+      ...ttsRequestMetadata(req.body, res),
+      ...generationRuntimeMetadata(generationDiagnostics),
+      error: safeErrorMetadata(error),
+    })
     next(error)
   }
 }
@@ -123,11 +157,14 @@ export async function downloadAudio(req: Request, res: Response): Promise<void> 
       if (err) {
         throw err
       }
-      logger.info(`Successfully downloaded file: ${safeFileName}`)
+      logger.info('Audio download completed', { extension: fileExt })
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
-    logger.error(`Download failed for ${fileName}: ${errorMessage}`)
+    logger.error('Audio download failed', {
+      extension: fileName ? path.extname(fileName).toLowerCase() : '',
+      error: safeErrorMetadata(error),
+    })
 
     const statusCode = errorMessage.includes('Invalid')
       ? 400

@@ -1,6 +1,9 @@
 type VoiceConfig = {
-  "Name": string,
-  "Gender": string,
-  "ContentCategories": string[],
-  "VoicePersonalities": string[]
+  Name: string
+  cnName?: string
+  Gender: string
+  language?: string
+  age?: string
+  ContentCategories: string[]
+  VoicePersonalities: string[]
 }

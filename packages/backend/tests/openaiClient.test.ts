@@ -1,5 +1,6 @@
 import { createOpenAIClient } from '../src/utils/openai'
 import { fetcher } from '../src/utils/request'
+import { logger } from '../src/utils/logger'
 
 jest.mock('../src/utils/request', () => ({
   fetcher: {
@@ -40,5 +41,34 @@ describe('OpenAI-compatible client', () => {
       expect.any(Object),
       expect.objectContaining({ timeout: 120_000 })
     )
+  })
+
+  it('records model and size metadata without Prompt or completion content', async () => {
+    const source = 'PRIVATE_SOURCE_TEXT 医疗对话'
+    const completion = '{"segments":[{"text":"PRIVATE_LLM_SEGMENT"}]}'
+    jest.mocked(fetcher.post).mockResolvedValue({
+      data: {
+        choices: [{ message: { content: completion } }],
+        usage: { total_tokens: 17 },
+      },
+    } as any)
+    const client = createOpenAIClient()
+    client.config({ baseURL: 'https://example.test', apiKey: 'sk-private', model: 'safe-model' })
+
+    await client.createChatCompletion({ messages: [{ role: 'user', content: source }] })
+
+    const logs = JSON.stringify([
+      ...jest.mocked(logger.info).mock.calls,
+      ...jest.mocked(logger.debug).mock.calls,
+      ...jest.mocked(logger.error).mock.calls,
+    ])
+    expect(logs).not.toContain(source)
+    expect(logs).not.toContain('PRIVATE_LLM_SEGMENT')
+    expect(logs).not.toContain('sk-private')
+    expect(logs).toContain('safe-model')
+    expect(logs).toContain('promptLength')
+    expect(logs).toContain('responseLength')
+    expect(logs).toContain('durationMs')
+    expect(logs).toContain('tokenCount')
   })
 })

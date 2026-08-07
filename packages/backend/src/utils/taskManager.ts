@@ -3,6 +3,7 @@ import { memoryUsage } from 'process'
 import { Request, Response, NextFunction } from 'express'
 import { formatFileSize } from '.'
 import { logger } from './logger'
+import type { GenerationDiagnostics } from './diagnostics'
 
 interface Options {
   prefix?: string
@@ -44,6 +45,7 @@ export interface Task {
     lang?: string
     voiceList?: VoiceConfig[]
     engine?: string
+    diagnostics?: GenerationDiagnostics
   }
 }
 class TaskManager {

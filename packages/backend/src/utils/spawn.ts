@@ -7,13 +7,13 @@ export function runEdgeTTS(
 ): Promise<{ audio: string; srt: string; success: boolean }> {
   return new Promise((resolve, reject) => {
     const srt = params.output.replace('.mp3', '.srt')
-    logger.info(
-      `run with : edge-tts --text ${params.text.slice(0, 10) + '...'} --voice ${
-        params.voice
-      }  --volume=${params.volume} --pitch=${params.pitch} --rate=${params.rate} --write-media ${
-        params.output
-      }`
-    )
+    logger.info('EdgeTTS subprocess started', {
+      voice: params.voice,
+      textLength: params.text.length,
+      volume: params.volume,
+      pitch: params.pitch,
+      rate: params.rate,
+    })
     const child = spawn(
       'edge-tts',
       [
@@ -37,17 +37,15 @@ export function runEdgeTTS(
     // 实时收集标准输出
     child.stdout.on('data', (data) => {
       stdout += data.toString()
-      console.log('Output:', data.toString())
     })
     // 实时收集错误输出
     child.stderr.on('data', (data) => {
       stderr += data.toString()
-      console.error('Error output:', data.toString())
     })
     // 进程结束
     child.on('close', (code) => {
       if (code === 0) {
-        console.log(`Voice file generated successfully: ${params.output}`)
+        logger.info('EdgeTTS subprocess completed')
         resolve({ success: true, audio: params.output, srt })
       } else {
         reject({

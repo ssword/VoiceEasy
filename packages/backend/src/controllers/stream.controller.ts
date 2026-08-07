@@ -5,6 +5,12 @@ import taskManager from '../utils/taskManager'
 import { generateTTSStream, generateTTSStreamJson } from '../services/tts.stream.service'
 import { generateId, streamWithLimit } from '../utils'
 import { normalizeTtsRequest } from '../services/ttsRequest'
+import {
+  createGenerationDiagnostics,
+  generationRuntimeMetadata,
+  safeErrorMetadata,
+  ttsRequestMetadata,
+} from '../utils/diagnostics'
 /**
  * @description 流式返回音频, 支持长文本
  * @param req
@@ -20,16 +26,27 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
       streamWithLimit(res, path.join(__dirname, '../../mock/flying.mp3'), 1280) // Mock stream with limit
       return
     }
-    logger.debug('Generating audio with body:', req.body)
     const formattedBody = normalizeTtsRequest(req.body)
     task = taskManager.createTask(formattedBody)
-    task.context = { req, res, body: req.body }
-    logger.info(`Generated stream task ID: ${task.id}`)
+    task.context = {
+      req,
+      res,
+      body: req.body,
+      diagnostics: createGenerationDiagnostics(),
+    }
+    logger.info('TTS stream request accepted', {
+      ...ttsRequestMetadata(req.body, res, task.id),
+      taskId: task.id,
+    })
     await generateTTSStream(formattedBody, task)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (task) taskManager.failTask(task.id, { message }, task)
-    logger.error(`createTaskStream error: ${message}`)
+    logger.error('TTS stream request failed', {
+      ...ttsRequestMetadata(req.body, res, task?.id),
+      ...generationRuntimeMetadata(task?.context?.diagnostics),
+      error: safeErrorMetadata(error),
+    })
     if (finishStartedResponse(res)) return
     next(error)
   }
@@ -38,7 +55,6 @@ export async function generateJson(req: Request, res: Response, next: NextFuncti
   let task: ReturnType<typeof taskManager.createTask> | undefined
   try {
     const data = req.body?.data
-    logger.debug('generateJson with body:', data)
     const formatedBody = data.map((item: any) => normalizeTtsRequest(item))
     const text = data.map((item: any) => item.text).join('')
     const taskParams = {
@@ -49,13 +65,26 @@ export async function generateJson(req: Request, res: Response, next: NextFuncti
     const voice = formatedBody[0].voice
 
     const segment: Segment = { id: generateId(voice, text), text }
-    task.context = { req, res, segment, body: req.body }
-    logger.info(`Generated stream task ID: ${task.id}`)
+    task.context = {
+      req,
+      res,
+      segment,
+      body: req.body,
+      diagnostics: createGenerationDiagnostics(formatedBody.length),
+    }
+    logger.info('TTS JSON stream request accepted', {
+      ...ttsRequestMetadata({ ...req.body, text }, res, task.id),
+      taskId: task.id,
+    })
     await generateTTSStreamJson(formatedBody, task)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (task) taskManager.failTask(task.id, { message }, task)
-    logger.error(`generateJson error: ${message}`)
+    logger.error('TTS JSON stream request failed', {
+      ...ttsRequestMetadata(req.body, res, task?.id),
+      ...generationRuntimeMetadata(task?.context?.diagnostics),
+      error: safeErrorMetadata(error),
+    })
     if (finishStartedResponse(res)) return
     next(error)
   }

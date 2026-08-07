@@ -5,6 +5,7 @@ import { Response } from 'express'
 import { PassThrough, Readable, Stream } from 'stream'
 import { logger } from './logger'
 import { AUDIO_DIR } from '../config'
+import { safeErrorMetadata } from './diagnostics'
 
 export async function getLangConfig(text: string) {
   const { franc } = await import('franc')
@@ -22,14 +23,13 @@ export async function readJson<T>(path: string): Promise<T> {
     const data = await fs.readFile(path, 'utf-8')
     return JSON.parse(data)
   } catch (err) {
-    console.log(`readJson ${path} error:`, (err as Error).message)
+    logger.error('JSON read failed', { error: safeErrorMetadata(err) })
     return {} as T
   }
 }
 export async function ensureDir(path: string) {
   try {
     await fs.mkdir(path, { recursive: true })
-    console.log(`ensure dir: ${path}`)
   } catch (error) {
     // Ignore EEXIST — directory already exists (race condition)
     const code = (error as any)?.code
@@ -44,9 +44,15 @@ export async function safeRunWithRetry<T>(
     retries?: number
     baseDelayMs?: number
     onError?: (err: unknown, attempt: number) => void
+    onRetry?: (failedAttempt: number) => void
   } = {}
 ): Promise<T> {
-  const { retries = 3, baseDelayMs = 200, onError = defaultErrorHandler } = options
+  const {
+    retries = 3,
+    baseDelayMs = 200,
+    onError = defaultErrorHandler,
+    onRetry,
+  } = options
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -54,6 +60,7 @@ export async function safeRunWithRetry<T>(
     } catch (err) {
       onError(err, attempt + 1)
       if (attempt < retries - 1) {
+        onRetry?.(attempt + 1)
         await asyncSleep(baseDelayMs * (attempt + 1))
       } else {
         throw err
@@ -65,8 +72,7 @@ export async function safeRunWithRetry<T>(
 
 // 默认错误处理器
 function defaultErrorHandler(err: unknown, attempt: number): void {
-  const message = err instanceof Error ? err.message : String(err)
-  logger.warn(`Attempt ${attempt} failed: ${message}`)
+  logger.warn('Operation attempt failed', { attempt, error: safeErrorMetadata(err) })
 }
 export async function asyncSleep(delay = 200) {
   return new Promise((resolve) => setTimeout(resolve, delay))
@@ -143,7 +149,7 @@ export function streamToResponse(
   // 输入流错误处理
   inputStream.on('error', (err: Error) => {
     if (isClientDisconnected) return
-    logger.error(`Input stream error: ${err.message}`)
+    logger.error('Input stream error', { error: safeErrorMetadata(err) })
     if (!res.headersSent) res.status(500)
     const errorMessage = onError(err)
     outputStream.write(errorMessage)
@@ -153,7 +159,7 @@ export function streamToResponse(
   // 输出流错误处理
   outputStream.on('error', (err: Error) => {
     if (isClientDisconnected) return
-    logger.error('Output stream error:', err.message)
+    logger.error('Output stream error', { error: safeErrorMetadata(err) })
     onError(err)
     res.status(500).end('Internal server error')
   })
@@ -168,7 +174,7 @@ export function streamToResponse(
   }
 
   inputStream.on('uncaughtException' as any, (err: Error) => {
-    logger.error(`Uncaught exception in input stream: ${err.message}`)
+    logger.error('Uncaught exception in input stream', { error: safeErrorMetadata(err) })
     if (!isClientDisconnected) {
       res.status(500).end('Internal server error')
     }
@@ -221,7 +227,7 @@ export function streamWithLimit(res: Response, filePath: string, bitrate = 128) 
   })
 
   fileStream.on('error', (err: Error) => {
-    logger.error(`Stream error: ${err.message}`)
+    logger.error('File stream error', { error: safeErrorMetadata(err) })
     res.status(500).send(`Stream error: ${err.message}`)
   })
 

@@ -17,6 +17,11 @@ import { mergeSubtitleFiles, SubtitleFile, SubtitleFiles } from '../utils/subtit
 import { Task } from '../utils/taskManager'
 import { handleSrt } from './tts.stream.service'
 import { createSynthesisCacheKey } from './synthesisCache'
+import { resolveRecommendationVoices } from './recommendationVoices'
+import {
+  createGenerationDiagnostics,
+  GenerationDiagnostics,
+} from '../utils/diagnostics'
 
 // 错误消息枚举
 export enum ErrorMessages {
@@ -32,13 +37,18 @@ export enum ErrorMessages {
 /**
  * 生成文本转语音 (TTS) 的音频和字幕
  */
-export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Promise<TTSResult> {
+export async function generateTTS(
+  params: Required<EdgeSchema>,
+  task?: Task,
+  diagnostics: GenerationDiagnostics = createGenerationDiagnostics()
+): Promise<TTSResult> {
   const { text, pitch, voice, rate, volume, useLLM, engine, instruction } = params
   // 检查缓存
   const cacheKey = createSynthesisCacheKey(params)
   const cache = await audioCacheInstance.getAudio(cacheKey)
   if (cache) {
-    logger.info(`Cache hit: ${voice} ${text.slice(0, 10)}`)
+    diagnostics.segmentCount = 1
+    logger.info('TTS cache hit', { engine, voice, textLength: text.length })
     return cache
   }
 
@@ -49,7 +59,7 @@ export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Pr
 
   let result: TTSResult
   if (useLLM) {
-    result = await generateWithLLM(segment, voiceList, lang, engine, task)
+    result = await generateWithLLM(segment, voiceList, lang, engine, diagnostics, task)
   } else {
     result = await generateWithoutLLM(
       segment,
@@ -63,13 +73,14 @@ export async function generateTTS(params: Required<EdgeSchema>, task?: Task): Pr
         engine,
         instruction,
       },
+      diagnostics,
       task
     )
   }
 
   // 验证结果并缓存
   validateTTSResult(result, segment.id)
-  logger.info(`Generated audio succeed: `, result)
+  logger.info('TTS generation completed', { engine, partial: result.partial === true })
   if (result.partial) {
     logger.warn(`Partial result detected, some splits generated audio failed!`)
   } else {
@@ -86,22 +97,13 @@ async function generateWithLLM(
   voiceList: VoiceConfig[],
   lang: string,
   engine: string,
+  diagnostics: GenerationDiagnostics,
   task?: Task
 ): Promise<TTSResult> {
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
 
-  // Resolve engine-specific voice list for non-default engines
-  let effectiveVoiceList = voiceList
-  if (engine && engine !== DEFAULT_ENGINE) {
-    const engineInstance = ttsPluginManager.getEngine(engine)
-    if (engineInstance?.getVoiceOptions) {
-      const engineVoices = await engineInstance.getVoiceOptions()
-      effectiveVoiceList = engineVoices.map((voice) =>
-        typeof voice === 'string' ? ({ Name: voice } as VoiceConfig) : (voice as VoiceConfig)
-      )
-    }
-  }
+  const effectiveVoiceList = await resolveRecommendationVoices(engine, voiceList)
 
   const formatLlmSegments = (llmSegments: any) =>
     llmSegments
@@ -123,8 +125,12 @@ async function generateWithLLM(
       )
     }
     const formattedSegments = formatLlmSegments(llmSegments)
-    logger.info(`AI 推荐分段结果 (${engine}):\n${JSON.stringify(formattedSegments, null, 2)}`)
-    const result = await buildSegmentList(segment, formattedSegments, task)
+    diagnostics.segmentCount = formattedSegments.length
+    logger.info('LLM Recommendation segmented content', {
+      engine,
+      segmentCount: formattedSegments.length,
+    })
+    const result = await buildSegmentList(segment, formattedSegments, diagnostics, task)
     task?.updateProgress?.(task.id, 100)
     return result
   } else {
@@ -146,12 +152,17 @@ async function generateWithLLM(
         )
       }
       const formattedSegments = formatLlmSegments(llmSegments)
-      logger.info(
-        `AI 推荐分段结果[${count}/${segments.length}] (${engine}):\n${JSON.stringify(formattedSegments, null, 2)}`
-      )
+      diagnostics.segmentCount += formattedSegments.length
+      logger.info('LLM Recommendation segmented content', {
+        engine,
+        batch: count,
+        batchCount: segments.length,
+        segmentCount: formattedSegments.length,
+      })
       const result = await buildSegmentList(
         { ...segment, id: `[segments:${count}]${segment.id}` },
         formattedSegments,
+        diagnostics,
         task
       )
       task?.updateProgress?.(task.id, getProgress())
@@ -198,16 +209,18 @@ const buildFinal = async (finalSegments: TTSResult[], id: string, engine?: strin
 async function generateWithoutLLM(
   segment: Segment,
   params: TTSParams,
+  diagnostics: GenerationDiagnostics,
   task?: Task
 ): Promise<TTSResult> {
   const { text, pitch, voice, rate, volume } = params
   const { length, segments } = splitText(text)
+  diagnostics.segmentCount = length
 
   if (length <= 1) {
-    return buildSegment(segment, params)
+    return buildSegment(segment, params, diagnostics)
   } else {
     const buildSegments = segments.map((segment) => ({ ...params, text: segment }))
-    let result = await buildSegmentList(segment, buildSegments, task)
+    let result = await buildSegmentList(segment, buildSegments, diagnostics, task)
     task?.updateProgress?.(task.id, 100)
     return result
   }
@@ -219,6 +232,7 @@ async function generateWithoutLLM(
 async function buildSegment(
   segment: Segment,
   params: TTSParams,
+  diagnostics: GenerationDiagnostics,
   dir: string = ''
 ): Promise<TTSResult> {
   const { id, text } = segment
@@ -233,8 +247,9 @@ async function buildSegment(
     output,
     engine,
     instruction,
+    onRetry: () => diagnostics.retryCount++,
   })
-  logger.info('Generated single segment:', result)
+  logger.info('Generated single Segment', { engine, voice })
   const engineInstance = ttsPluginManager.getEngine(engine || DEFAULT_ENGINE)
   if (engineInstance?.supportsSubtitles !== false) {
     setTimeout(() => {
@@ -253,6 +268,7 @@ async function buildSegment(
 async function buildSegmentList(
   segment: Segment,
   segments: BuildSegment[],
+  diagnostics: GenerationDiagnostics,
   task?: Task
 ): Promise<TTSResult> {
   const fileList: string[] = []
@@ -279,12 +295,22 @@ async function buildSegmentList(
     const cacheKey = createSynthesisCacheKey(segment)
     const cache = await audioCacheInstance.getAudio(cacheKey)
     if (cache) {
-      logger.info(`Cache hit[segments]: ${voice} ${text.slice(0, 10)}`)
+      logger.info('Segment cache hit', { engine, voice, textLength: text.length })
       fileList.push(cache.audio)
       return cache
     }
-    const result = await generateSingleVoice({ text, pitch, voice, rate, volume, output, engine, instruction })
-    logger.debug(`Cache miss and generate audio: ${result.audio}, ${result.srt}`)
+    const result = await generateSingleVoice({
+      text,
+      pitch,
+      voice,
+      rate,
+      volume,
+      output,
+      engine,
+      instruction,
+      onRetry: () => diagnostics.retryCount++,
+    })
+    logger.debug('Segment cache miss', { engine, voice })
     fileList.push(result.audio)
     handledLength++
     task?.updateProgress?.(task.id, getProgress())
@@ -295,20 +321,20 @@ async function buildSegmentList(
   let partial = false
   const results = await runConcurrentTasks(tasks, EDGE_API_LIMIT)
   if (results?.some((result) => !result.success)) {
-    logger.warn(`Partial result detected, some splits generated audio failed!`, results)
+    logger.warn('Partial result detected; some Segments failed', {
+      failedSegmentCount: results.filter((result) => !result.success).length,
+    })
     partial = true
   }
   const outputFile = path.resolve(AUDIO_DIR, id)
-  logger.debug(`Concatenating audio files from ${tmpDirPath} to ${outputFile}`)
+  logger.debug('Concatenating Segment audio', { segmentCount: fileList.length })
   await concatDirAudio({ inputDir: tmpDirPath, fileList, outputFile })
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
   const firstEngine = segments[0]?.engine || DEFAULT_ENGINE
   const engInstance = ttsPluginManager.getEngine(firstEngine)
   if (engInstance?.supportsSubtitles !== false) {
     await concatDirSrt({ inputDir: tmpDirPath, fileList, outputFile })
-    logger.debug(
-      `Concatenating SRT files from ${tmpDirPath} to ${outputFile.replace('.mp3', '.srt')}`
-    )
+    logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
   }
 
   return {
@@ -328,7 +354,6 @@ async function runConcurrentTasks(tasks: (() => Promise<any>)[], limit: number):
   )
   const { results, cancelled } = await controller.run()
   logger.info(`Tasks completed: ${results.length}, cancelled: ${cancelled}`)
-  logger.debug(`Task results:`, results)
   return results
 }
 
