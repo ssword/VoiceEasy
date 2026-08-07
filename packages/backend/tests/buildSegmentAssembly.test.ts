@@ -126,6 +126,7 @@ describe('Build Segment audio assembly boundary', () => {
       expect(overlap.left).toBeLessThan(overlap.right * 0.5)
       expect(result.segmentStartsMs).toHaveLength(2)
       expect(result.segmentStartsMs[0]).toBe(0)
+      expect(Number.isInteger(result.segmentStartsMs[1])).toBe(true)
       expect(result.segmentStartsMs[1]).toBeGreaterThan(550)
       expect(result.segmentStartsMs[1]).toBeLessThan(700)
     } finally {
@@ -144,7 +145,7 @@ describe('Build Segment audio assembly boundary', () => {
         createStereoToneMp3(first, 440, 0.2, 'left'),
         createStereoToneMp3(second, 880, 1, 'right'),
       ])
-      await assembleBuildSegmentAudio({
+      const result = await assembleBuildSegmentAudio({
         strategy: 'timeline-mix',
         segments: [
           { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
@@ -157,6 +158,42 @@ describe('Build Segment audio assembly boundary', () => {
       const duration = await probeAudioDuration(outputFile)
       expect(duration).toBeGreaterThan(0.9)
       expect(duration).toBeLessThan(1.1)
+      expect(result.segmentStartsMs).toEqual([0, 0])
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('returns actual starts for consecutive interruptions', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-consecutive-'))
+    const audioFiles = ['first.mp3', 'second.mp3', 'third.mp3'].map((file) =>
+      path.join(tempDir, file)
+    )
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(audioFiles[0], 440, 1, 'left'),
+        createStereoToneMp3(audioFiles[1], 660, 1, 'right'),
+        createStereoToneMp3(audioFiles[2], 880, 1, 'left'),
+      ])
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: audioFiles[0], interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: audioFiles[1], interrupt: true, overlapMs: 400, duckPreviousDb: -8 },
+          { audioFile: audioFiles[2], interrupt: true, overlapMs: 300, duckPreviousDb: -10 },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      expect(result.segmentStartsMs).toHaveLength(3)
+      expect(result.segmentStartsMs.every(Number.isInteger)).toBe(true)
+      expect(result.segmentStartsMs[1]).toBeGreaterThan(550)
+      expect(result.segmentStartsMs[1]).toBeLessThan(700)
+      expect(result.segmentStartsMs[2] - result.segmentStartsMs[1]).toBeGreaterThan(650)
+      expect(result.segmentStartsMs[2] - result.segmentStartsMs[1]).toBeLessThan(800)
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }
@@ -227,6 +264,13 @@ describe('Build Segment audio assembly boundary', () => {
 
       const subtitles = await fs.readFile(outputFile.replace('.mp3', '.srt'), 'utf8')
       expect(subtitles.indexOf('First')).toBeLessThan(subtitles.indexOf('Second'))
+      const metadata = JSON.parse(
+        await fs.readFile(path.join(tempDir, 'all_splits.mp3.json'), 'utf8')
+      )
+      expect(metadata).toEqual([
+        { part: 'First', start: 0, end: 100 },
+        { part: 'Second', start: 100, end: 200 },
+      ])
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }
@@ -304,6 +348,43 @@ describe('Build Segment audio assembly boundary', () => {
         await fs.readFile(path.join(tempDir, 'all_splits.mp3.json'), 'utf8')
       )
       expect(metadata).toEqual(expected)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps current Segment order when cached audio filenames have older indexes', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-cached-srt-order-'))
+    const cachedSecond = path.join(tempDir, '2_splits.mp3')
+    const cachedFirst = path.join(tempDir, '1_splits.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        fs.writeFile(
+          `${cachedSecond}.json`,
+          JSON.stringify([{ part: 'Current first', start: 0, end: 500 }])
+        ),
+        fs.writeFile(
+          `${cachedFirst}.json`,
+          JSON.stringify([{ part: 'Current second', start: 0, end: 500 }])
+        ),
+      ])
+
+      await assembleBuildSegmentSubtitles({
+        inputDir: tempDir,
+        outputFile,
+        audioFiles: [cachedSecond, cachedFirst],
+        segmentStartsMs: [0, 600],
+      })
+
+      const metadata = JSON.parse(
+        await fs.readFile(path.join(tempDir, 'all_splits.mp3.json'), 'utf8')
+      )
+      expect(metadata).toEqual([
+        { part: 'Current first', start: 0, end: 500 },
+        { part: 'Current second', start: 600, end: 1100 },
+      ])
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }

@@ -86,7 +86,9 @@ export function placeSubtitleFilesOnTimeline(
     }
     return file.map((item, itemIndex) => {
       if (!isValidSubtitleItem(item)) {
-        throw new SubtitleMergeError(`Invalid subtitle item at file ${fileIndex}, item ${itemIndex}`)
+        throw new SubtitleMergeError(
+          `Invalid subtitle item at file ${fileIndex}, item ${itemIndex}`
+        )
       }
       return {
         part: item.part,

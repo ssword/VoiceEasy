@@ -150,7 +150,7 @@ async function timelineMixAudio(
     effectiveOverlapsMs[index] = effectiveOverlapMs
     startsMs[index] = Math.max(
       0,
-      startsMs[index - 1] + durationsMs[index - 1] - effectiveOverlapMs
+      Math.round(startsMs[index - 1] + durationsMs[index - 1] - effectiveOverlapMs)
     )
   }
 
@@ -351,6 +351,8 @@ export async function assembleBuildSegmentSubtitles({
 }: BuildSegmentSubtitleAssemblyRequest): Promise<void> {
   const orderedJsonFiles = jsonFiles
     ? jsonFiles
+    : segmentStartsMs
+    ? audioFiles?.map((file) => `${file}.json`) || []
     : sortBySegmentIndex(audioFiles?.map((file) => `${file}.json`) || [], '.json')
   const subtitleFiles: SubtitleFiles = await Promise.all(
     orderedJsonFiles.map((file) => readJson<SubtitleFile>(file))

@@ -266,10 +266,7 @@ async function bufferTimelineBuildSegments(segments: BuildSegment[], task: Task)
       outputFile,
       signal,
     })
-    const supportsSubtitles = segments.every((item) => {
-      const engine = ttsPluginManager.getEngine(item.engine || DEFAULT_ENGINE)
-      return engine?.supportsSubtitles !== false
-    })
+    const supportsSubtitles = buildSegmentsSupportSubtitles(segments)
     if (supportsSubtitles) {
       const jsonFiles = await Promise.all(
         generatedSegments.map((generatedSegment) =>
@@ -389,10 +386,7 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   }
 
   const progress = () => Number(((completedSegments / totalSegments) * 100).toFixed(2))
-  const supportsSubtitles = segments.every((item) => {
-    const engine = ttsPluginManager.getEngine(item.engine || DEFAULT_ENGINE)
-    return engine?.supportsSubtitles !== false
-  })
+  const supportsSubtitles = buildSegmentsSupportSubtitles(segments)
 
   async function* generatedAudio(
     maxRetries = 3
@@ -443,6 +437,13 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   }
 
   await streamAssembledBuildSegments(task, output, generatedAudio(), supportsSubtitles)
+}
+
+function buildSegmentsSupportSubtitles(segments: Pick<BuildSegment, 'engine'>[]): boolean {
+  return segments.every((item) => {
+    const engine = ttsPluginManager.getEngine(item.engine || DEFAULT_ENGINE)
+    return engine?.supportsSubtitles !== false
+  })
 }
 
 async function streamAssembledBuildSegments(
