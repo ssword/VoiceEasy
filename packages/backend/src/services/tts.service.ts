@@ -1,6 +1,5 @@
 import path from 'path'
 import fs from 'fs/promises'
-import ffmpeg from 'fluent-ffmpeg'
 import { AUDIO_DIR, STATIC_DOMAIN, EDGE_API_LIMIT } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
@@ -22,6 +21,10 @@ import {
   createGenerationDiagnostics,
   GenerationDiagnostics,
 } from '../utils/diagnostics'
+import {
+  assembleBuildSegmentAudio,
+  assembleBuildSegmentSubtitles,
+} from './buildSegmentAssembly.service'
 
 // 错误消息枚举
 export enum ErrorMessages {
@@ -197,7 +200,10 @@ const buildFinal = async (finalSegments: TTSResult[], id: string, engine?: strin
   const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
   await ensureDir(finalDir)
   const outputFile = path.resolve(AUDIO_DIR, id)
-  await concatDirAudio({ inputDir: finalDir, fileList, outputFile })
+  await assembleBuildSegmentAudio({
+    segments: fileList.map((audio) => ({ audio })),
+    destination: { kind: 'file', inputDir: finalDir, outputFile },
+  })
   return {
     audio: `${STATIC_DOMAIN}/${id}`,
     srt: supportsSrt ? `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}` : '',
@@ -271,7 +277,6 @@ async function buildSegmentList(
   diagnostics: GenerationDiagnostics,
   task?: Task
 ): Promise<TTSResult> {
-  const fileList: string[] = []
   const length = segments.length
   let handledLength = 0
 
@@ -296,7 +301,6 @@ async function buildSegmentList(
     const cache = await audioCacheInstance.getAudio(cacheKey)
     if (cache) {
       logger.info('Segment cache hit', { engine, voice, textLength: text.length })
-      fileList.push(cache.audio)
       return cache
     }
     const result = await generateSingleVoice({
@@ -311,7 +315,6 @@ async function buildSegmentList(
       onRetry: () => diagnostics.retryCount++,
     })
     logger.debug('Segment cache miss', { engine, voice })
-    fileList.push(result.audio)
     handledLength++
     task?.updateProgress?.(task.id, getProgress())
     const params = { text, pitch, voice, rate, volume, engine, instruction }
@@ -326,14 +329,20 @@ async function buildSegmentList(
     })
     partial = true
   }
+  const fileList = results
+    .filter((result) => result.success)
+    .map((result) => result.value.audio as string)
   const outputFile = path.resolve(AUDIO_DIR, id)
   logger.debug('Concatenating Segment audio', { segmentCount: fileList.length })
-  await concatDirAudio({ inputDir: tmpDirPath, fileList, outputFile })
+  await assembleBuildSegmentAudio({
+    segments: fileList.map((audio) => ({ audio })),
+    destination: { kind: 'file', inputDir: tmpDirPath, outputFile },
+  })
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
   const firstEngine = segments[0]?.engine || DEFAULT_ENGINE
   const engInstance = ttsPluginManager.getEngine(firstEngine)
   if (engInstance?.supportsSubtitles !== false) {
-    await concatDirSrt({ inputDir: tmpDirPath, fileList, outputFile })
+    await assembleBuildSegmentSubtitles({ inputDir: tmpDirPath, audioFiles: fileList, outputFile })
     logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
   }
 
@@ -407,71 +416,4 @@ function validateTTSResult(result: TTSResult, segmentId: string): void {
   if (!result.audio) {
     throw new Error(`${ErrorMessages.INCOMPLETE_RESULT} for segment ${segmentId}`)
   }
-}
-
-/**
- * 拼接音频文件
- */
-export async function concatDirAudio({
-  fileList,
-  outputFile,
-  inputDir,
-}: ConcatAudioParams): Promise<void> {
-  const mp3Files = sortAudioDir(fileList, '.mp3')
-  if (!mp3Files.length) throw new Error('No MP3 files found in input directory')
-
-  const tempListPath = path.resolve(inputDir, 'file_list.txt')
-  await fs.writeFile(tempListPath, mp3Files.map((file) => `file '${file}'`).join('\n'))
-
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg()
-      .input(tempListPath)
-      .inputFormat('concat')
-      .inputOption('-safe', '0')
-      .audioCodec('copy')
-      .output(outputFile)
-      .on('end', () => resolve())
-      .on('error', (err) => reject(new Error(`Concat failed: ${err.message}`)))
-      .run()
-  })
-}
-
-/**
- * 拼接字幕文件
- */
-export async function concatDirSrt({
-  fileList,
-  outputFile,
-  inputDir,
-}: ConcatAudioParams): Promise<void> {
-  const jsonFiles = sortAudioDir(
-    fileList.map((file) => `${file}.json`),
-    '.json'
-  )
-  if (!jsonFiles.length) throw new Error('No JSON files found for subtitles')
-
-  const subtitleFiles: SubtitleFiles = await Promise.all(
-    jsonFiles.map((file) => readJson<SubtitleFile>(file))
-  )
-  const mergedJson = mergeSubtitleFiles(subtitleFiles)
-  const tempJsonPath = path.resolve(inputDir, 'all_splits.mp3.json')
-  await fs.writeFile(tempJsonPath, JSON.stringify(mergedJson, null, 2))
-  await generateSrt(tempJsonPath, outputFile.replace('.mp3', '.srt'))
-}
-
-/**
- * 按文件名排序音频文件
- */
-function sortAudioDir(fileList: string[], ext: string = '.mp3'): string[] {
-  return fileList
-    .filter((file) => path.extname(file).toLowerCase() === ext)
-    .sort(
-      (a, b) => Number(path.parse(a).name.split('_')[0]) - Number(path.parse(b).name.split('_')[0])
-    )
-}
-
-export interface ConcatAudioParams {
-  fileList: string[]
-  outputFile: string
-  inputDir: string
 }

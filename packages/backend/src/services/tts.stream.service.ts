@@ -1,8 +1,7 @@
 import path, { resolve } from 'path'
 import { Response } from 'express'
-import fs, { readdir } from 'fs/promises'
-import ffmpeg from 'fluent-ffmpeg'
-import { AUDIO_DIR, STATIC_DOMAIN, EDGE_API_LIMIT } from '../config'
+import { readdir } from 'fs/promises'
+import { AUDIO_DIR } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
 import {
@@ -10,7 +9,6 @@ import {
   ensureDir,
   generateId,
   getLangConfig,
-  readJson,
   streamToResponse,
 } from '../utils'
 import { ttsPluginManager } from '../tts/pluginManager'
@@ -19,14 +17,17 @@ import { openai } from '../utils/openai'
 import { splitText } from './text.service'
 import { generateSingleVoiceStream, generateSrt } from './edge-tts.service'
 import { EdgeSchema } from '../schema/generate'
-import { MapLimitController } from '../controllers/concurrency.controller'
 import audioCacheInstance from './audioCache.service'
-import { mergeSubtitleFiles, SubtitleFile, SubtitleFiles } from '../utils/subtitle'
 import taskManager, { Task } from '../utils/taskManager'
 import { Readable, PassThrough } from 'stream'
 import { createSynthesisCacheKey } from './synthesisCache'
 import { resolveRecommendationVoices } from './recommendationVoices'
 import { audioByteLength, generationRuntimeMetadata } from '../utils/diagnostics'
+import {
+  assembleBuildSegmentAudio,
+  assembleBuildSegmentSubtitles,
+  GeneratedBuildSegmentAudio,
+} from './buildSegmentAssembly.service'
 
 // 错误消息枚举
 enum ErrorMessages {
@@ -142,79 +143,47 @@ async function generateWithLLMStream(task: Task) {
     const getProgress = () => {
       return Number(((count / segments.length) * 100).toFixed(2))
     }
-    const outputStream = new PassThrough()
-    streamTaskToResponse(task, outputStream, {
-      fileName: segment.id,
-      onCompleted: () => {
-        const engineInstance = ttsPluginManager.getEngine(engine || DEFAULT_ENGINE)
-        if (engineInstance?.supportsSubtitles !== false) {
-          setTimeout(() => {
-            handleSrt(output)
-          }, 200)
+    async function* generatedAudio(): AsyncGenerator<GeneratedBuildSegmentAudio> {
+      for (const textSegment of segments) {
+        count++
+        const prompt = getPrompt(lang, voiceList, textSegment, engine)
+        const llmResponse = await fetchLLMSegment(prompt)
+        const llmSegments = llmResponse?.result || llmResponse?.segments || []
+        if (!Array.isArray(llmSegments)) {
+          throw new Error(
+            'LLM response is not an array, please switch to Edge TTS mode or use another model'
+          )
         }
-      },
-    })
-
-    for (let seg of segments) {
-      count++
-      const prompt = getPrompt(lang, voiceList, seg, engine)
-      const llmResponse = await fetchLLMSegment(prompt)
-      let llmSegments = llmResponse?.result || llmResponse?.segments || []
-      if (!Array.isArray(llmSegments)) {
-        throw new Error(
-          'LLM response is not an array, please switch to Edge TTS mode or use another model'
-        )
-      }
-      const llmFormatted = formatLlmSegments(llmSegments)
-      if (task.context?.diagnostics) {
-        task.context.diagnostics.segmentCount += llmFormatted.length
-      }
-      logger.info('Streaming LLM Recommendation segmented content', {
-        engine,
-        batch: count,
-        batchCount: segments.length,
-        segmentCount: llmFormatted.length,
-      })
-      for (let segment of llmFormatted) {
-        const stream = (await generateSingleVoiceStream({
-          ...segment,
-          output,
-          outputType: 'stream',
-        })) as Readable
-        stream.pipe(outputStream, { end: false })
-        await new Promise<void>((resolve, reject) => {
-          stream.once('end', resolve)
-          stream.once('error', reject)
+        const llmFormatted = formatLlmSegments(llmSegments)
+        if (task.context?.diagnostics) {
+          task.context.diagnostics.segmentCount += llmFormatted.length
+        }
+        logger.info('Streaming LLM Recommendation segmented content', {
+          engine,
+          batch: count,
+          batchCount: segments.length,
+          segmentCount: llmFormatted.length,
         })
+        for (const buildSegment of llmFormatted) {
+          yield {
+            audio: (await generateSingleVoiceStream({
+              ...buildSegment,
+              output,
+              outputType: 'stream',
+            })) as Readable,
+          }
+        }
+        logger.info(`Progress: ${getProgress()}%`)
       }
-      logger.info(`Progress: ${getProgress()}%`)
     }
-    outputStream.end()
-  }
-}
-const buildFinal = async (finalSegments: TTSResult[], id: string) => {
-  const subtitleFiles: SubtitleFiles = await Promise.all(
-    finalSegments.map((file) => {
-      const base = path.basename(file.audio)
-      const jsonPath = path.resolve(AUDIO_DIR, base.replace('.mp3', ''), 'all_splits.mp3.json')
-      return readJson<SubtitleFile>(jsonPath)
-    })
-  )
 
-  const mergedJson = mergeSubtitleFiles(subtitleFiles)
-  const finalDir = path.resolve(AUDIO_DIR, id.replace('.mp3', ''))
-  await ensureDir(finalDir)
-  const finalJson = path.resolve(finalDir, '[merged]all_splits.mp3.json')
-  await fs.writeFile(finalJson, JSON.stringify(mergedJson, null, 2))
-  await generateSrt(finalJson, path.resolve(AUDIO_DIR, id.replace('.mp3', '.srt')))
-  const fileList = finalSegments.map((segment) =>
-    path.resolve(AUDIO_DIR, path.parse(segment.audio).base)
-  )
-  const outputFile = path.resolve(AUDIO_DIR, id)
-  await concatDirAudio({ inputDir: finalDir, fileList, outputFile })
-  return {
-    audio: `${STATIC_DOMAIN}/${id}`,
-    srt: `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}`,
+    const engineInstance = ttsPluginManager.getEngine(engine || DEFAULT_ENGINE)
+    await streamAssembledBuildSegments(
+      task,
+      output,
+      generatedAudio(),
+      engineInstance?.supportsSubtitles !== false
+    )
   }
 }
 
@@ -279,7 +248,11 @@ export async function handleSrt(audioPath: string, stream = true) {
     .sort((a, b) => Number(a.split('.json.')?.[1] || 0) - Number(b.split('.json.')?.[1] || 0))
     .map((file) => path.join(tmpDir, file))
   if (!fileList.length) return
-  concatDirSrt({ jsonFiles: fileList, inputDir: tmpDir, outputFile: audioPath })
+  await assembleBuildSegmentSubtitles({
+    jsonFiles: fileList,
+    inputDir: tmpDir,
+    outputFile: audioPath,
+  })
 }
 async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<void> {
   const { res, segment } = task.context as Required<NonNullable<Task['context']>>
@@ -296,80 +269,86 @@ async function buildSegmentList(segments: BuildSegment[], task: Task): Promise<v
   }
 
   const progress = () => Number(((completedSegments / totalSegments) * 100).toFixed(2))
-  const outputStream = new PassThrough()
   const supportsSubtitles = segments.every((item) => {
     const engine = ttsPluginManager.getEngine(item.engine || DEFAULT_ENGINE)
     return engine?.supportsSubtitles !== false
   })
 
+  async function* generatedAudio(maxRetries = 3): AsyncGenerator<GeneratedBuildSegmentAudio> {
+    for (const [index, buildSegment] of segments.entries()) {
+      const generateWithRetry = async (attempt = 0): Promise<Readable> => {
+        try {
+          return (await generateSingleVoiceStream({
+            ...buildSegment,
+            outputType: 'stream',
+            output,
+          })) as Readable
+        } catch (err) {
+          const error = err as Error
+          if (attempt + 1 >= maxRetries) {
+            throw Object.assign(error, {
+              segmentIndex: index,
+              attempt: attempt + 1,
+            } as SegmentError)
+          }
+          if (task.context?.diagnostics) task.context.diagnostics.retryCount++
+          logger.warn('Segment synthesis attempt failed', {
+            engine: buildSegment.engine,
+            segmentIndex: index,
+            attempt: attempt + 1,
+            maxRetries,
+          })
+          await asyncSleep(1000)
+          return generateWithRetry(attempt + 1)
+        }
+      }
+
+      try {
+        // TODO: Concurrency of streaming flow
+        const audioStream = await generateWithRetry()
+        yield { audio: audioStream }
+        completedSegments++
+        logger.info(`Segment ${index + 1}/${totalSegments} completed. Progress: ${progress()}%`)
+      } catch (err) {
+        const { segmentIndex, attempt } = err as SegmentError
+        logger.error('Segment synthesis failed', {
+          segmentIndex,
+          retryCount: Math.max(0, attempt - 1),
+        })
+        throw err
+      }
+    }
+  }
+
+  await streamAssembledBuildSegments(task, output, generatedAudio(), supportsSubtitles)
+}
+
+async function streamAssembledBuildSegments(
+  task: Task,
+  outputFile: string,
+  segments: AsyncIterable<GeneratedBuildSegmentAudio>,
+  supportsSubtitles: boolean
+): Promise<void> {
+  const outputStream = new PassThrough()
   streamTaskToResponse(task, outputStream, {
-    fileName: segment.id,
+    fileName: path.basename(outputFile),
     onCompleted: () => {
       if (supportsSubtitles) {
         setTimeout(() => {
-          handleSrt(output)
+          handleSrt(outputFile)
         }, 200)
       }
     },
   })
 
-  const processSegment = async (index: number, maxRetries = 3): Promise<void> => {
-    if (index >= totalSegments) {
-      outputStream.end()
-      return
-    }
-
-    const segment = segments[index]
-    const generateWithRetry = async (attempt = 0): Promise<Readable> => {
-      try {
-        return (await generateSingleVoiceStream({
-          ...segment,
-          outputType: 'stream',
-          output,
-        })) as Readable
-      } catch (err) {
-        const error = err as Error
-        if (attempt + 1 >= maxRetries) {
-          throw Object.assign(error, { segmentIndex: index, attempt: attempt + 1 } as SegmentError)
-        }
-        if (task.context?.diagnostics) task.context.diagnostics.retryCount++
-        logger.warn('Segment synthesis attempt failed', {
-          engine: segment.engine,
-          segmentIndex: index,
-          attempt: attempt + 1,
-          maxRetries,
-        })
-        await asyncSleep(1000)
-        return generateWithRetry(attempt + 1)
-      }
-    }
-
-    try {
-      // TODO: Concurrency of streaming flow
-      const audioStream = await generateWithRetry()
-      audioStream.pipe(outputStream, { end: false })
-      await new Promise<void>((resolve, reject) => {
-        audioStream.once('end', resolve)
-        audioStream.once('error', reject)
-      })
-      completedSegments++
-      logger.info(`Segment ${index + 1}/${totalSegments} completed. Progress: ${progress()}%`)
-      await processSegment(index + 1)
-    } catch (err) {
-      const { segmentIndex, attempt, message } = err as SegmentError
-      logger.error('Segment synthesis failed', {
-        segmentIndex,
-        retryCount: Math.max(0, attempt - 1),
-      })
-      outputStream.emit('error', err)
-    }
-  }
-
   try {
-    await processSegment(0)
-  } catch (err) {
+    await assembleBuildSegmentAudio({
+      segments,
+      destination: { kind: 'stream', output: outputStream },
+    })
+  } catch (error) {
     logger.error('Audio processing aborted')
-    !res.headersSent && res.status(500).end('Internal server error')
+    outputStream.destroy(error as Error)
   }
 }
 
@@ -419,19 +398,6 @@ function logStreamCompletion(task: Task, res?: Response) {
     model: task.fields?.recommendationModel || '',
     ...generationRuntimeMetadata(diagnostics),
   })
-}
-
-/**
- * 并发执行任务
- */
-async function runConcurrentTasks(tasks: (() => Promise<any>)[], limit: number): Promise<any[]> {
-  logger.debug(`Running ${tasks.length} tasks with a limit of ${limit}`)
-  const controller = new MapLimitController(tasks, limit, () =>
-    logger.info('All concurrent tasks completed')
-  )
-  const { results, cancelled } = await controller.run()
-  logger.info(`Tasks completed: ${results.length}, cancelled: ${cancelled}`)
-  return results
 }
 
 /**
@@ -490,75 +456,4 @@ function validateTTSResult(result: TTSResult, segmentId: string): void {
   if (!result.audio) {
     throw new Error(`${ErrorMessages.INCOMPLETE_RESULT} for segment ${segmentId}`)
   }
-}
-
-/**
- * 拼接音频文件
- */
-export async function concatDirAudio({
-  fileList,
-  outputFile,
-  inputDir,
-}: ConcatAudioParams): Promise<void> {
-  const mp3Files = sortAudioDir(fileList!, '.mp3')
-  if (!mp3Files.length) throw new Error('No MP3 files found in input directory')
-
-  const tempListPath = path.resolve(inputDir, 'file_list.txt')
-  await fs.writeFile(tempListPath, mp3Files.map((file) => `file '${file}'`).join('\n'))
-
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg()
-      .input(tempListPath)
-      .inputFormat('concat')
-      .inputOption('-safe', '0')
-      .audioCodec('copy')
-      .output(outputFile)
-      .on('end', () => resolve())
-      .on('error', (err) => reject(new Error(`Concat failed: ${err.message}`)))
-      .run()
-  })
-}
-
-/**
- * 拼接字幕文件
- */
-export async function concatDirSrt({
-  fileList,
-  outputFile,
-  inputDir,
-  jsonFiles,
-}: ConcatAudioParams): Promise<void> {
-  const _jsonFiles =
-    jsonFiles ||
-    sortAudioDir(
-      fileList!.map((file) => `${file}.json`),
-      '.json'
-    )
-  if (!_jsonFiles.length) throw new Error('No JSON files found for subtitles')
-
-  const subtitleFiles: SubtitleFiles = await Promise.all(
-    _jsonFiles.map((file) => readJson<SubtitleFile>(file))
-  )
-  const mergedJson = mergeSubtitleFiles(subtitleFiles)
-  const tempJsonPath = path.resolve(inputDir, 'all_splits.mp3.json')
-  await fs.writeFile(tempJsonPath, JSON.stringify(mergedJson, null, 2))
-  await generateSrt(tempJsonPath, outputFile.replace('.mp3', '.srt'))
-}
-
-/**
- * 按文件名排序音频文件
- */
-function sortAudioDir(fileList: string[], ext: string = '.mp3'): string[] {
-  return fileList
-    .filter((file) => path.extname(file).toLowerCase() === ext)
-    .sort(
-      (a, b) => Number(path.parse(a).name.split('_')[0]) - Number(path.parse(b).name.split('_')[0])
-    )
-}
-
-export interface ConcatAudioParams {
-  fileList?: string[]
-  outputFile: string
-  inputDir: string
-  jsonFiles?: string[]
 }
