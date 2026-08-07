@@ -15,6 +15,7 @@ export interface SynthesisCacheIdentity {
   sampleRate: number | null
   useLLM: boolean
   recommendationModel: string
+  enableInterruptions: boolean
 }
 
 export type SynthesisCacheInput = Pick<TTSParams, 'text' | 'voice'> &
@@ -24,6 +25,7 @@ export type SynthesisCacheInput = Pick<TTSParams, 'text' | 'voice'> &
     sampleRate?: number | null
     useLLM?: boolean
     recommendationModel?: string
+    enableInterruptions?: boolean
   }
 
 export function createSynthesisCacheIdentity(
@@ -44,6 +46,7 @@ export function createSynthesisCacheIdentity(
     sampleRate: input.sampleRate ?? engine?.sampleRate ?? null,
     useLLM: input.useLLM ?? false,
     recommendationModel: input.recommendationModel || '',
+    enableInterruptions: input.enableInterruptions ?? false,
   }
 }
 

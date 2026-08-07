@@ -24,6 +24,7 @@ describe('Ticket 02 — synthesis cache identity', () => {
     ['sample rate', { sampleRate: 16000 }],
     ['LLM Recommendation mode', { useLLM: true }],
     ['LLM Recommendation model', { useLLM: true, recommendationModel: 'another-model' }],
+    ['interruption assembly mode', { useLLM: true, enableInterruptions: true }],
   ])('isolates cache entries when %s changes', (_field, change) => {
     expect(createSynthesisCacheKey({ ...baseline, ...change })).not.toBe(
       createSynthesisCacheKey(baseline)

@@ -23,7 +23,9 @@ import {
 import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
+  TimelineBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
+import { normalizeRecommendationSegments } from './recommendationInterruptions'
 
 // 错误消息枚举
 export enum ErrorMessages {
@@ -44,7 +46,17 @@ export async function generateTTS(
   task?: Task,
   diagnostics: GenerationDiagnostics = createGenerationDiagnostics()
 ): Promise<TTSResult> {
-  const { text, pitch, voice, rate, volume, useLLM, engine, instruction } = params
+  const {
+    text,
+    pitch,
+    voice,
+    rate,
+    volume,
+    useLLM,
+    engine,
+    instruction,
+    enableInterruptions,
+  } = params
   // 检查缓存
   const cacheKey = createSynthesisCacheKey(params)
   const cache = await audioCacheInstance.getAudio(cacheKey)
@@ -61,7 +73,15 @@ export async function generateTTS(
 
   let result: TTSResult
   if (useLLM) {
-    result = await generateWithLLM(segment, voiceList, lang, engine, diagnostics, task)
+    result = await generateWithLLM(
+      segment,
+      voiceList,
+      lang,
+      engine,
+      enableInterruptions,
+      diagnostics,
+      task
+    )
   } else {
     result = await generateWithoutLLM(
       segment,
@@ -99,6 +119,7 @@ async function generateWithLLM(
   voiceList: VoiceConfig[],
   lang: string,
   engine: string,
+  enableInterruptions: boolean,
   diagnostics: GenerationDiagnostics,
   task?: Task
 ): Promise<TTSResult> {
@@ -108,7 +129,7 @@ async function generateWithLLM(
   const effectiveVoiceList = await resolveRecommendationVoices(engine, voiceList)
 
   const formatLlmSegments = (llmSegments: any) =>
-    llmSegments
+    normalizeRecommendationSegments(llmSegments, enableInterruptions)
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
         ...segment,
@@ -116,7 +137,7 @@ async function generateWithLLM(
         engine,
       }))
   if (length <= 1) {
-    const prompt = getPrompt(lang, effectiveVoiceList, segments[0], engine)
+    const prompt = getPrompt(lang, effectiveVoiceList, segments[0], engine, enableInterruptions)
     // logger.debug(`Prompt for LLM: ${prompt}`)
     const llmResponse = await fetchLLMSegment(prompt)
     let llmSegments = llmResponse?.result || llmResponse?.segments || []
@@ -144,7 +165,7 @@ async function generateWithLLM(
     }
     for (let seg of segments) {
       count++
-      const prompt = getPrompt(lang, effectiveVoiceList, seg, engine)
+      const prompt = getPrompt(lang, effectiveVoiceList, seg, engine, enableInterruptions)
       // logger.debug(`Prompt for LLM: ${prompt}`)
       const llmResponse = await fetchLLMSegment(prompt)
       let llmSegments = llmResponse?.result || llmResponse?.segments || []
@@ -327,17 +348,42 @@ async function buildSegmentList(
     })
     partial = true
   }
-  const fileList = results
-    .filter((result) => result.success)
-    .map((result) => result.value.audio as string)
-  const outputFile = path.resolve(AUDIO_DIR, id)
-  logger.debug('Concatenating Segment audio', { segmentCount: fileList.length })
-  await assembleBuildSegmentAudio({
-    strategy: 'concat',
-    segments: fileList.map((audioFile) => ({ audioFile })),
-    inputDir: tmpDirPath,
-    outputFile,
+  const generatedSegments: TimelineBuildSegmentAudio[] = results.flatMap((result, index) => {
+    if (!result.success) return []
+    const buildSegment = segments[index]
+    return [
+      {
+        audioFile: result.value.audio as string,
+        interrupt: buildSegment.interrupt === true,
+        overlapMs: buildSegment.overlapMs || 0,
+        duckPreviousDb: buildSegment.duckPreviousDb || 0,
+      },
+    ]
   })
+  const fileList = generatedSegments.map((segment) => segment.audioFile)
+  const outputFile = path.resolve(AUDIO_DIR, id)
+  const hasEffectiveInterruption = generatedSegments.some(
+    (segment, index) => index > 0 && segment.interrupt && segment.overlapMs > 0
+  )
+  logger.debug('Assembling Segment audio', {
+    segmentCount: fileList.length,
+    strategy: hasEffectiveInterruption ? 'timeline-mix' : 'concat',
+  })
+  if (hasEffectiveInterruption) {
+    await assembleBuildSegmentAudio({
+      strategy: 'timeline-mix',
+      segments: generatedSegments,
+      inputRoot: AUDIO_DIR,
+      outputFile,
+    })
+  } else {
+    await assembleBuildSegmentAudio({
+      strategy: 'concat',
+      segments: generatedSegments,
+      inputDir: tmpDirPath,
+      outputFile,
+    })
+  }
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
   const firstEngine = segments[0]?.engine || DEFAULT_ENGINE
   const engInstance = ttsPluginManager.getEngine(firstEngine)

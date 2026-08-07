@@ -199,6 +199,16 @@
               <el-form-item label="模型">
                 <el-input v-model="audioConfig.openaiModel" clearable placeholder="gpt-4o..." />
               </el-form-item>
+              <el-form-item label="允许抢话">
+                <el-switch
+                  v-model="audioConfig.enableInterruptions"
+                  :disabled="audioConfig.inputText.length >= 200"
+                />
+                <span class="setting-hint">
+                  仅支持少于 200 字的短文本，
+                  且只在原文明确出现打断或急切反驳时生效
+                </span>
+              </el-form-item>
             </el-form>
           </div>
 
@@ -280,6 +290,7 @@ import {
 import confetti from 'canvas-confetti'
 import { useAudioConfigStore, type AudioConfig } from '@/stores/audioConfig'
 import { getEngineSelection, getVoiceLanguage } from '@/utils/engineSelection'
+import { buildGenerateRequest } from '@/utils/generationRequest'
 import { defaultVoiceList, previewTextSelect } from '@/constants/voice'
 import DownloadList from '@/components/DownloadList.vue'
 import Notification from '@/assets/notification.mp3'
@@ -532,25 +543,7 @@ const filterVoices = () => {
 }
 
 const buildParams = (text: string) => {
-  const { selectedVoice, rate, pitch, volume, openaiBaseUrl, openaiKey, openaiModel, voiceMode, engine } =
-    audioConfig
-  const params: any = {
-    text: text.trim(),
-    engine,
-  }
-
-  if (voiceMode === 'preset') {
-    params.voice = selectedVoice
-    params.rate = `${rate > 0 ? '+' : ''}${rate}%`
-    params.pitch = `${pitch > 0 ? '+' : ''}${pitch}Hz`
-    params.volume = `${volume > 0 ? '+' : ''}${volume}%`
-  } else {
-    params.useLLM = true
-    params.openaiBaseUrl = openaiBaseUrl
-    params.openaiKey = openaiKey
-    params.openaiModel = openaiModel
-  }
-  return params
+  return buildGenerateRequest(audioConfig, text)
 }
 
 const previewAudio = async () => {
@@ -860,6 +853,12 @@ onMounted(async () => {
 .voice-selector,
 .ai-settings {
   margin-bottom: 1.5rem;
+}
+
+.setting-hint {
+  margin-left: 0.75rem;
+  color: #64748b;
+  font-size: 0.8rem;
 }
 
 .voice-option {

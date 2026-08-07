@@ -51,3 +51,29 @@ describe('Ticket 03 — domain-neutral LLM Recommendation prompt', () => {
     expect(prompt).not.toContain('主要场景都是医院')
   })
 })
+
+describe('Issue #3 — interruption-aware LLM Recommendation prompt', () => {
+  it('permits interruption fields only for explicit interruption cues', () => {
+    const prompt = getPrompt(
+      'eng',
+      voices,
+      'Morgan said, "I think—" "No, that is wrong!" Riley interrupted.',
+      'edge-tts',
+      true
+    )
+
+    expect(prompt).toContain('interrupt')
+    expect(prompt).toContain('overlapMs')
+    expect(prompt).toContain('duckPreviousDb')
+    expect(prompt).toMatch(/unfinished speech/i)
+    expect(prompt).toMatch(/urgent rebuttal/i)
+    expect(prompt).toMatch(/must not add, delete, duplicate, rewrite, or reorder/i)
+  })
+
+  it('does not offer interruption fields when the capability is disabled', () => {
+    const prompt = getPrompt('eng', voices, 'A calm exchange.', 'edge-tts', false)
+
+    expect(prompt).not.toContain('overlapMs')
+    expect(prompt).not.toContain('duckPreviousDb')
+  })
+})

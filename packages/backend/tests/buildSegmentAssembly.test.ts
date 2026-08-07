@@ -6,7 +6,7 @@ import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
 } from '../src/services/buildSegmentAssembly.service'
-import { probeAudioDuration } from './helpers/audio'
+import { createStereoToneMp3, probeAudioDuration, probeStereoRms } from './helpers/audio'
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -86,6 +86,120 @@ describe('Build Segment audio assembly boundary', () => {
       const assembledDuration = await probeAudioDuration(outputFile)
       expect(assembledDuration).toBeGreaterThan(sourceDuration * 1.8)
       expect(assembledDuration).toBeLessThan(sourceDuration * 2.2)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses real media duration to overlap tracks and duck the previous Segment', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 1, 'left'),
+        createStereoToneMp3(second, 880, 1, 'right'),
+      ])
+
+      await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: second, interrupt: true, overlapMs: 400, duckPreviousDb: -12 },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      const duration = await probeAudioDuration(outputFile)
+      expect(duration).toBeGreaterThan(1.5)
+      expect(duration).toBeLessThan(1.7)
+
+      const beforeOverlap = await probeStereoRms(outputFile, 0.2, 0.2)
+      const overlap = await probeStereoRms(outputFile, 0.7, 0.2)
+      expect(beforeOverlap.left).toBeGreaterThan(0.02)
+      expect(beforeOverlap.right).toBeLessThan(0.002)
+      expect(overlap.left).toBeGreaterThan(0.005)
+      expect(overlap.right).toBeGreaterThan(0.02)
+      expect(overlap.left).toBeLessThan(overlap.right * 0.5)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('converges overlap to the previous duration without creating negative time', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-bound-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 0.2, 'left'),
+        createStereoToneMp3(second, 880, 1, 'right'),
+      ])
+      await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: second, interrupt: true, overlapMs: 1000, duckPreviousDb: -6 },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      const duration = await probeAudioDuration(outputFile)
+      expect(duration).toBeGreaterThan(0.9)
+      expect(duration).toBeLessThan(1.1)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('fails safely when Timeline Mix input is missing', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-missing-'))
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await expect(
+        assembleBuildSegmentAudio({
+          strategy: 'timeline-mix',
+          segments: [
+            {
+              audioFile: path.join(tempDir, 'missing.mp3'),
+              interrupt: false,
+              overlapMs: 0,
+              duckPreviousDb: 0,
+            },
+          ],
+          inputRoot: tempDir,
+          outputFile,
+        })
+      ).rejects.toThrow(/Timeline Mix input/i)
+      await expect(fs.stat(outputFile)).rejects.toThrow()
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects Timeline Mix media outside the caller-owned internal root', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-root-'))
+    const fixture = path.resolve(__dirname, '../../frontend/src/assets/notification.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await expect(
+        assembleBuildSegmentAudio({
+          strategy: 'timeline-mix',
+          segments: [
+            { audioFile: fixture, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          ],
+          inputRoot: tempDir,
+          outputFile,
+        })
+      ).rejects.toThrow(/internal path/i)
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }

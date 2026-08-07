@@ -12,6 +12,7 @@ export const edgeSchema = z.object({
   volume: z.string().optional(),
   rate: z.string().optional(),
   useLLM: z.boolean().default(false),
+  enableInterruptions: z.boolean().default(false),
   instruction: z.string().optional(),
   engine: z
     .string()
@@ -37,6 +38,7 @@ export const llmSchema = z.object({
     z.string().trim().min(1, { message: '请在环境变量设置或前端传入 openaiModel 模型名称！' })
   ),
   useLLM: z.boolean().default(true),
+  enableInterruptions: z.boolean().default(false),
 })
 
 const dataItemSchema = z.object({

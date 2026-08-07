@@ -2,6 +2,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import ffmpeg from 'fluent-ffmpeg'
 import { PassThrough, Readable } from 'stream'
+import { spawn } from 'child_process'
 import { generateSrt } from './edge-tts.service'
 import { readJson } from '../utils'
 import {
@@ -9,9 +10,16 @@ import {
   SubtitleFile,
   SubtitleFiles,
 } from '../utils/subtitle'
+import { clampFiniteNumber } from '../utils/safeNumber'
 
 export interface GeneratedFileBuildSegmentAudio {
   audioFile: string
+}
+
+export interface TimelineBuildSegmentAudio extends GeneratedFileBuildSegmentAudio {
+  interrupt: boolean
+  overlapMs: number
+  duckPreviousDb: number
 }
 
 export interface GeneratedStreamBuildSegmentAudio {
@@ -23,6 +31,12 @@ export type BuildSegmentAssemblyRequest =
       strategy: 'concat'
       segments: Iterable<GeneratedFileBuildSegmentAudio>
       inputDir: string
+      outputFile: string
+    }
+  | {
+      strategy: 'timeline-mix'
+      segments: Iterable<TimelineBuildSegmentAudio>
+      inputRoot: string
       outputFile: string
     }
   | {
@@ -63,12 +77,167 @@ export async function assembleBuildSegmentAudio(
     return
   }
 
+  if (request.strategy === 'timeline-mix') {
+    await timelineMixAudio(Array.from(request.segments), request.inputRoot, request.outputFile)
+    return
+  }
+
   const fileList = Array.from(request.segments, (segment) => segment.audioFile)
   await concatAudioFiles({
     inputDir: request.inputDir,
     outputFile: request.outputFile,
     fileList,
   })
+}
+
+async function timelineMixAudio(
+  segments: TimelineBuildSegmentAudio[],
+  inputRoot: string,
+  outputFile: string
+): Promise<void> {
+  if (!segments.length) throw new Error('No Build Segment audio provided for Timeline Mix')
+  const resolvedInputRoot = await fs.realpath(inputRoot).catch(() => undefined)
+  if (!resolvedInputRoot) throw new Error('Timeline Mix internal root is missing')
+  const resolvedOutputParent = await fs.realpath(path.dirname(outputFile)).catch(() => undefined)
+  const resolvedOutputFile = resolvedOutputParent
+    ? path.join(resolvedOutputParent, path.basename(outputFile))
+    : undefined
+  if (!resolvedOutputFile || !isPathInside(resolvedInputRoot, resolvedOutputFile)) {
+    throw new Error('Timeline Mix output must use an internal path')
+  }
+
+  const durationsMs: number[] = []
+  const internalAudioFiles: string[] = []
+  for (const segment of segments) {
+    const internalAudioFile = await fs.realpath(segment.audioFile).catch(() => undefined)
+    if (!internalAudioFile) throw new Error('Timeline Mix input is missing or empty')
+    if (!isPathInside(resolvedInputRoot, internalAudioFile)) {
+      throw new Error('Timeline Mix input must use an internal path')
+    }
+    const stat = await fs.stat(internalAudioFile).catch(() => undefined)
+    if (!stat?.isFile() || stat.size === 0) {
+      throw new Error('Timeline Mix input is missing or empty')
+    }
+    internalAudioFiles.push(internalAudioFile)
+    durationsMs.push(await probeDurationMs(internalAudioFile))
+  }
+
+  const startsMs = [0]
+  const effectiveOverlapsMs = [0]
+  for (let index = 1; index < segments.length; index++) {
+    const overlapMs = segments[index].interrupt
+      ? clampFiniteNumber(segments[index].overlapMs, 0, 1000)
+      : 0
+    const effectiveOverlapMs = Math.min(overlapMs, durationsMs[index - 1])
+    effectiveOverlapsMs[index] = effectiveOverlapMs
+    startsMs[index] = Math.max(
+      0,
+      startsMs[index - 1] + durationsMs[index - 1] - effectiveOverlapMs
+    )
+  }
+
+  const filters = segments.map((_segment, index) => {
+    const filtersForInput = [
+      'aresample=44100',
+      'aformat=sample_fmts=fltp:channel_layouts=stereo',
+    ]
+    const nextSegment = segments[index + 1]
+    const nextOverlapMs = effectiveOverlapsMs[index + 1] || 0
+    if (nextSegment?.interrupt && nextOverlapMs > 0) {
+      const duckDb = clampFiniteNumber(nextSegment.duckPreviousDb, -18, 0)
+      const duckStartSeconds = formatFfmpegNumber(
+        (durationsMs[index] - nextOverlapMs) / 1000
+      )
+      const durationSeconds = formatFfmpegNumber(durationsMs[index] / 1000)
+      const multiplier = formatFfmpegNumber(Math.pow(10, duckDb / 20))
+      filtersForInput.push(
+        `volume=${multiplier}:enable='between(t,${duckStartSeconds},${durationSeconds})'`
+      )
+    }
+    filtersForInput.push(`adelay=${Math.round(startsMs[index])}:all=1`)
+    return `[${index}:a]${filtersForInput.join(',')}[segment${index}]`
+  })
+  const labels = segments.map((_segment, index) => `[segment${index}]`).join('')
+  const mix = `amix=inputs=${segments.length}:duration=longest:dropout_transition=0:normalize=0`
+  const limiter = 'alimiter=limit=0.95:attack=5:release=50:latency=1'
+  filters.push(`${labels}${mix},${limiter}[mixed]`)
+
+  const temporaryOutput = `${outputFile}.timeline-${process.pid}-${Date.now()}.mp3`
+  const args = internalAudioFiles.flatMap((audioFile) => ['-i', audioFile])
+  args.push(
+    '-filter_complex',
+    filters.join(';'),
+    '-map',
+    '[mixed]',
+    '-codec:a',
+    'libmp3lame',
+    '-q:a',
+    '2',
+    '-y',
+    temporaryOutput
+  )
+
+  try {
+    await runMediaProcess('ffmpeg', args, 'Timeline Mix failed')
+    const outputStat = await fs.stat(temporaryOutput).catch(() => undefined)
+    if (!outputStat?.isFile() || outputStat.size === 0) {
+      throw new Error('Timeline Mix produced empty audio')
+    }
+    await fs.rename(temporaryOutput, outputFile)
+  } catch (error) {
+    await fs.unlink(temporaryOutput).catch(() => undefined)
+    throw error
+  }
+}
+
+async function probeDurationMs(audioFile: string): Promise<number> {
+  const stdout = await runMediaProcess(
+    'ffprobe',
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      audioFile,
+    ],
+    'Timeline Mix could not read input duration'
+  )
+  const durationSeconds = Number(stdout.trim())
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    throw new Error('Timeline Mix input has invalid duration')
+  }
+  return durationSeconds * 1000
+}
+
+async function runMediaProcess(
+  command: 'ffmpeg' | 'ffprobe',
+  args: string[],
+  errorPrefix: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.once('error', (error) => reject(new Error(`${errorPrefix}: ${error.message}`)))
+    child.once('close', (code) => {
+      if (code === 0) resolve(stdout)
+      else reject(new Error(`${errorPrefix}: ${stderr.trim() || `process exited with ${code}`}`))
+    })
+  })
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, path.resolve(candidate))
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+function formatFfmpegNumber(value: number): string {
+  if (!Number.isFinite(value)) throw new Error('Invalid Timeline Mix numeric value')
+  return value.toFixed(6)
 }
 
 async function writeStreamingAudio(output: PassThrough, chunk: unknown): Promise<void> {

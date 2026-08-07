@@ -1,4 +1,4 @@
-const cnTemplate = (voiceList: VoiceConfig[], text: string) => `
+const cnTemplate = (voiceList: VoiceConfig[], text: string, interruptions = '') => `
 我希望你根据以下声音配置和一段文字内容，为文字配音提供优化建议。任务包括：
 1. 将文字按场景、角色、旁白分割。
 2. 根据角色的性格、对话语气，从声音配置中推荐合适的"Name"。
@@ -15,6 +15,7 @@ ${JSON.stringify(voiceList, null, 2)}
 - rate: 语速调整，百分比形式，默认 +0%（正常），如 "+50%"（加快 50%），"-20%"（减慢 20%）。
 - volume: 音量调整，百分比形式，默认 +0%（正常），如 "+20%"（增 20%），"-10%"（减 10%）。
 - pitch: 音调调整，默认 +0Hz（正常），如 "+10Hz"（提高 10 赫兹），"-5Hz"（降低 5 赫兹）。
+${interruptions}
 
 ### 最终返回JSON格式
 {
@@ -34,7 +35,7 @@ ${JSON.stringify(voiceList, null, 2)}
 ${text}
 `
 
-const cnEnhancedTemplate = (voiceList: VoiceConfig[], text: string) => `
+const cnEnhancedTemplate = (voiceList: VoiceConfig[], text: string, interruptions = '') => `
 你是一位专业的语音合成导演。请根据以下声音配置和文字内容，为 Qwen-Audio-TTS 模型提供精细化的配音方案。
 
 ## 核心原则
@@ -73,6 +74,7 @@ ${JSON.stringify(voiceList, null, 2)}
 ### 富语言标签（可选，极少使用）
 仅在需要拟声效果的戏剧性时刻偶尔使用。
 - [laughing] 笑声、[sighing] 叹息、[gasp] 倒吸气、[cough] 咳嗽
+${interruptions}
 
 ### 最终返回JSON格式
 {
@@ -93,7 +95,7 @@ ${JSON.stringify(voiceList, null, 2)}
 ${text}
 `
 
-const engTemplate = (voiceList: VoiceConfig[], text: string) => `
+const engTemplate = (voiceList: VoiceConfig[], text: string, interruptions = '') => `
 I hope you can provide optimization suggestions for text dubbing based on the following sound configuration and a paragraph of text content. Tasks include:
 1. Divide the text by scene, role, and narration.
 2. Recommend a suitable "Name" from the sound configuration based on the character's personality and dialogue tone.
@@ -109,6 +111,7 @@ ${JSON.stringify(voiceList, null, 2)}
 - rate: Speech speed adjustment, percentage form, default +0% (normal), such as "+50%" (50% faster), "-20%" (20% slower).
 - volume: Volume adjustment, percentage form, default +0% (normal), such as "+20%" (increase 20%), "-10%" (decrease 10%).
 - pitch: pitch adjustment, default +0Hz (normal), such as "+10Hz" (increase 10 Hz), "-5Hz" (decrease 5 Hz).
+${interruptions}
 
 ### Final Output JSON format
 {
@@ -132,7 +135,8 @@ export function getPrompt(
   lang = 'cn',
   voiceList: VoiceConfig[],
   text: string,
-  engine?: string
+  engine?: string,
+  enableInterruptions = false
 ) {
   // For non-default engines, voices don't have language prefixes — use all voices.
   const isDefaultEngine = !engine || engine === 'edge-tts'
@@ -141,15 +145,38 @@ export function getPrompt(
   const filteredVoices = isDefaultEngine
     ? voiceList.filter((voice) => voice.Name.startsWith(lang === 'eng' ? 'en' : 'zh'))
     : voiceList
+  const interruptionInstructions = enableInterruptions
+    ? lang === 'eng'
+      ? [
+          '',
+          '### Interruption fields',
+          'You may set "interrupt": true on a Segment only when the original text explicitly',
+          'shows unfinished speech, an interruption, an urgent rebuttal, or an argument.',
+          'Otherwise set it to false. For an interruption, return numeric "overlapMs"',
+          '(0-1000) and "duckPreviousDb" (-18-0). The first Segment cannot interrupt.',
+          'You must not add, delete, duplicate, rewrite, or reorder any original text.',
+          '',
+        ].join('\n')
+      : [
+          '',
+          '### 抢话字段',
+          '仅当原文明确表现话未说完、打断、急切反驳或争执时，',
+          '才可在当前 Segment 设置 "interrupt": true；否则必须为 false。',
+          '抢话时返回数值 "overlapMs"（0-1000）',
+          '和 "duckPreviousDb"（-18-0）。第一条 Segment 不能抢话。',
+          '不得新增、删除、重复、改写或重排任何原文。',
+          '',
+        ].join('\n')
+    : ''
 
   switch (lang) {
     case 'zh':
     case 'cn':
       return isQwenAudio
-        ? cnEnhancedTemplate(filteredVoices, text)
-        : cnTemplate(filteredVoices, text)
+        ? cnEnhancedTemplate(filteredVoices, text, interruptionInstructions)
+        : cnTemplate(filteredVoices, text, interruptionInstructions)
     case 'eng':
-      return engTemplate(filteredVoices, text)
+      return engTemplate(filteredVoices, text, interruptionInstructions)
     default:
       throw new Error(`Unsupported language: ${lang}`)
   }

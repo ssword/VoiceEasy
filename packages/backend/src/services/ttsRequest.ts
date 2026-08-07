@@ -2,7 +2,12 @@ import type { EdgeSchema } from '../schema/generate'
 import { DEFAULT_ENGINE, MODEL_NAME } from '../config'
 
 type TtsRequestBody = Pick<EdgeSchema, 'text' | 'voice'> &
-  Partial<Pick<EdgeSchema, 'pitch' | 'volume' | 'rate' | 'useLLM' | 'engine' | 'instruction'>> & {
+  Partial<
+    Pick<
+      EdgeSchema,
+      'pitch' | 'volume' | 'rate' | 'useLLM' | 'engine' | 'instruction' | 'enableInterruptions'
+    >
+  > & {
     openaiModel?: string
   }
 
@@ -16,6 +21,7 @@ export function normalizeTtsRequest({
   engine,
   instruction,
   openaiModel,
+  enableInterruptions,
 }: TtsRequestBody) {
   return {
     text: text.trim(),
@@ -24,6 +30,7 @@ export function normalizeTtsRequest({
     rate: normalizeAdjustment(rate, '%'),
     volume: normalizeAdjustment(volume, '%'),
     useLLM: useLLM ?? false,
+    enableInterruptions: useLLM === true && enableInterruptions === true,
     engine: engine || DEFAULT_ENGINE,
     instruction: instruction || '',
     recommendationModel: useLLM ? openaiModel || MODEL_NAME || '' : '',

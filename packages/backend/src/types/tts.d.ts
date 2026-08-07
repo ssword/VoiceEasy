@@ -18,6 +18,9 @@ interface TTSParams {
   output: string
   engine?: string
   instruction?: string
+  interrupt?: boolean
+  overlapMs?: number
+  duckPreviousDb?: number
 }
 type BuildSegment = TTSParams & {
   text: string

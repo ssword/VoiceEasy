@@ -18,6 +18,7 @@ export interface AudioConfig {
   openaiModel: string;
   previewAudioUrl: string;
   superLong?: boolean;
+  enableInterruptions: boolean;
 }
 
 // 默认配置常量
@@ -38,6 +39,7 @@ const defaultConfig: AudioConfig = {
   openaiModel: '',
   previewAudioUrl: '',
   superLong: false,
+  enableInterruptions: false,
 };
 
 export const useAudioConfigStore = defineStore('audioConfig', () => {
