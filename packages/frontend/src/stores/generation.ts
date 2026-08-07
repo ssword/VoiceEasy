@@ -15,12 +15,15 @@ export interface Audio {
   download?: () => void
 }
 
+export type GenerationPhase = 'idle' | 'generating-segments' | 'timeline-mix' | 'streaming'
+
 export const useGenerationStore = defineStore(
   'generation',
   () => {
     const audio = ref<string | null>(null)
     const file = ref<string | null>(null)
     const progress = ref<number>(0)
+    const phase = ref<GenerationPhase>('idle')
     const audioList = ref<Audio[]>([])
     function setAudio(url: string) {
       audio.value = url
@@ -33,11 +36,25 @@ export const useGenerationStore = defineStore(
     function updateProgress(value: number) {
       progress.value = value
     }
+    function updatePhase(value: GenerationPhase) {
+      phase.value = value
+    }
     function updateAudioList(newAudioList: Audio[]) {
       audioList.value.length = 0
       audioList.value.push(...newAudioList)
     }
-    return { audio, file, progress, setFile, setAudio, updateProgress, audioList, updateAudioList }
+    return {
+      audio,
+      file,
+      progress,
+      phase,
+      setFile,
+      setAudio,
+      updateProgress,
+      updatePhase,
+      audioList,
+      updateAudioList,
+    }
   },
   { persist: false }
 )

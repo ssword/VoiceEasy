@@ -54,13 +54,19 @@ export async function createTask(req: Request, res: Response, next: NextFunction
       })
     const data = {
       success: true,
-      data: { ...task },
+      data: toPublicTask(task),
       code: 200,
     }
     res.json(data)
   } catch (error) {
     next(error)
   }
+}
+
+function toPublicTask(task: ReturnType<typeof taskManager.getTask>) {
+  if (!task) return task
+  const { updateProgress: _updateProgress, endTask: _endTask, context: _context, ...publicTask } = task
+  return publicTask
 }
 export async function getTask(req: Request, res: Response, next: NextFunction) {
   const taskId = req.params.id
@@ -72,7 +78,7 @@ export async function getTask(req: Request, res: Response, next: NextFunction) {
     }
     const data = {
       success: true,
-      data: { ...task },
+      data: toPublicTask(task),
       code: 200,
     }
     res.json(data)

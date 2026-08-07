@@ -46,6 +46,7 @@ export interface Task {
     voiceList?: VoiceConfig[]
     engine?: string
     diagnostics?: GenerationDiagnostics
+    abortSignal?: AbortSignal
   }
 }
 class TaskManager {

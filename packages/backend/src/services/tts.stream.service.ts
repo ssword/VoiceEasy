@@ -1,6 +1,7 @@
 import path, { resolve } from 'path'
 import { Response } from 'express'
-import { readdir } from 'fs/promises'
+import fs, { readdir } from 'fs/promises'
+import { createReadStream, createWriteStream } from 'fs'
 import { AUDIO_DIR } from '../config'
 import { logger } from '../utils/logger'
 import { getPrompt } from '../llm/prompt/generateSegment'
@@ -20,6 +21,7 @@ import { EdgeSchema } from '../schema/generate'
 import audioCacheInstance from './audioCache.service'
 import taskManager, { Task } from '../utils/taskManager'
 import { Readable, PassThrough } from 'stream'
+import { pipeline } from 'stream/promises'
 import { createSynthesisCacheKey } from './synthesisCache'
 import { resolveRecommendationVoices } from './recommendationVoices'
 import { audioByteLength, generationRuntimeMetadata } from '../utils/diagnostics'
@@ -27,7 +29,9 @@ import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
   GeneratedStreamBuildSegmentAudio,
+  TimelineBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
+import { normalizeRecommendationSegments } from './recommendationInterruptions'
 
 // 错误消息枚举
 enum ErrorMessages {
@@ -108,10 +112,14 @@ export async function generateTTSStreamJson(formatedBody: Required<EdgeSchema>[]
  */
 async function generateWithLLMStream(task: Task) {
   const { segment, voiceList, lang, engine } = task.context as Required<NonNullable<Task['context']>>
+  const enableInterruptions = task.fields.enableInterruptions === true
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
-  const formatLlmSegments = (llmSegments: any) =>
-    llmSegments
+  const formatLlmSegments = (llmSegments: any, normalize = true) =>
+    (normalize
+      ? normalizeRecommendationSegments(llmSegments, enableInterruptions)
+      : llmSegments
+    )
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
         ...segment,
@@ -119,7 +127,7 @@ async function generateWithLLMStream(task: Task) {
         engine,
       }))
   if (length <= 1) {
-    const prompt = getPrompt(lang, voiceList, segments[0], engine)
+    const prompt = getPrompt(lang, voiceList, segments[0], engine, enableInterruptions)
     const llmResponse = await fetchLLMSegment(prompt)
     let llmSegments = llmResponse?.result || llmResponse?.segments || []
     if (!Array.isArray(llmSegments)) {
@@ -135,7 +143,7 @@ async function generateWithLLMStream(task: Task) {
       engine,
       segmentCount: formattedSegments.length,
     })
-    await buildSegmentList(formattedSegments, task)
+    await assembleRecommendedSegments(formattedSegments, task)
   } else {
     const output = resolve(AUDIO_DIR, id)
     let count = 0
@@ -143,10 +151,42 @@ async function generateWithLLMStream(task: Task) {
     const getProgress = () => {
       return Number(((count / segments.length) * 100).toFixed(2))
     }
+    if (enableInterruptions) {
+      const recommendedSegments: any[] = []
+      for (const textSegment of segments) {
+        count++
+        const prompt = getPrompt(lang, voiceList, textSegment, engine, true)
+        const llmResponse = await fetchLLMSegment(prompt)
+        const llmSegments = llmResponse?.result || llmResponse?.segments || []
+        if (!Array.isArray(llmSegments)) {
+          throw new Error(
+            'LLM response is not an array, please switch to Edge TTS mode or use another model'
+          )
+        }
+        const llmFormatted = formatLlmSegments(llmSegments, false)
+        recommendedSegments.push(...llmFormatted)
+        if (task.context?.diagnostics) {
+          task.context.diagnostics.segmentCount += llmFormatted.length
+        }
+        logger.info('Streaming LLM Recommendation segmented content', {
+          engine,
+          batch: count,
+          batchCount: segments.length,
+          segmentCount: llmFormatted.length,
+        })
+        logger.info(`Progress: ${getProgress()}%`)
+      }
+      await assembleRecommendedSegments(
+        normalizeRecommendationSegments(recommendedSegments, true) as unknown as BuildSegment[],
+        task
+      )
+      return
+    }
+
     async function* generatedAudio(): AsyncGenerator<GeneratedStreamBuildSegmentAudio> {
       for (const textSegment of segments) {
         count++
-        const prompt = getPrompt(lang, voiceList, textSegment, engine)
+        const prompt = getPrompt(lang, voiceList, textSegment, engine, false)
         const llmResponse = await fetchLLMSegment(prompt)
         const llmSegments = llmResponse?.result || llmResponse?.segments || []
         if (!Array.isArray(llmSegments)) {
@@ -184,6 +224,65 @@ async function generateWithLLMStream(task: Task) {
       generatedAudio(),
       engineInstance?.supportsSubtitles !== false
     )
+  }
+}
+
+async function assembleRecommendedSegments(segments: BuildSegment[], task: Task): Promise<void> {
+  const hasEffectiveInterruption = segments.some(
+    (segment, index) => index > 0 && segment.interrupt === true && (segment.overlapMs || 0) > 0
+  )
+  if (!hasEffectiveInterruption) {
+    await buildSegmentList(segments, task)
+    return
+  }
+
+  await bufferTimelineBuildSegments(segments, task)
+}
+
+async function bufferTimelineBuildSegments(segments: BuildSegment[], task: Task): Promise<void> {
+  const { res, segment } = task.context as Required<NonNullable<Task['context']>>
+  const signal = task.context?.abortSignal
+  const outputFile = path.resolve(AUDIO_DIR, segment.id)
+  const inputDir = `${outputFile}.timeline-inputs`
+  await ensureDir(inputDir)
+
+  try {
+    const generatedSegments: TimelineBuildSegmentAudio[] = []
+    for (const [index, buildSegment] of segments.entries()) {
+      signal?.throwIfAborted()
+      const audioFile = path.join(inputDir, `${String(index + 1).padStart(6, '0')}.mp3`)
+      const audioStream = (await generateSingleVoiceStream({
+        ...buildSegment,
+        output: audioFile,
+        outputType: 'stream',
+      })) as Readable
+      await pipeline(audioStream, createWriteStream(audioFile), { signal })
+      generatedSegments.push({
+        audioFile,
+        interrupt: buildSegment.interrupt === true,
+        overlapMs: buildSegment.overlapMs || 0,
+        duckPreviousDb: buildSegment.duckPreviousDb || 0,
+      })
+    }
+
+    setStreamResponseHeaders(res, task, 'buffered-timeline', 'audio/mpeg')
+    res.flushHeaders()
+    await assembleBuildSegmentAudio({
+      strategy: 'timeline-mix',
+      segments: generatedSegments,
+      inputRoot: AUDIO_DIR,
+      outputFile,
+      signal,
+    })
+    streamTaskToResponse(task, createReadStream(outputFile), {
+      mode: 'buffered-timeline',
+      contentType: 'audio/mpeg',
+      onCompleted: () => void fs.rm(inputDir, { recursive: true, force: true }),
+      onClosed: () => void fs.rm(inputDir, { recursive: true, force: true }),
+    })
+  } catch (error) {
+    await fs.rm(inputDir, { recursive: true, force: true })
+    throw error
   }
 }
 
@@ -358,7 +457,13 @@ async function streamAssembledBuildSegments(
 function streamTaskToResponse(
   task: Task,
   input: Readable,
-  options: { fileName: string; onCompleted?: () => void }
+  options: {
+    fileName?: string
+    mode?: 'stream' | 'buffered-timeline'
+    contentType?: string
+    onCompleted?: () => void
+    onClosed?: () => void
+  }
 ) {
   const { res } = task.context as Required<NonNullable<Task['context']>>
   input.on('data', (chunk) => {
@@ -369,12 +474,13 @@ function streamTaskToResponse(
     }
   })
   streamToResponse(res, input, {
-    headers: {
-      'content-type': 'application/octet-stream',
-      'x-generate-tts-type': 'stream',
-      'x-generate-tts-id': task.id,
-      'Access-Control-Expose-Headers': 'x-generate-tts-type, x-generate-tts-id',
-    },
+    headers: res.headersSent
+      ? {}
+      : streamResponseHeaders(
+          task,
+          options.mode || 'stream',
+          options.contentType || 'application/octet-stream'
+        ),
     fileName: options.fileName,
     onError: (error) => {
       taskManager.failTask(task.id, { message: error.message }, task)
@@ -388,7 +494,32 @@ function streamTaskToResponse(
     onClose: () => {
       taskManager.cancelTask(task.id, 'Client disconnected', task)
       logger.info(`Streaming ${task.id} cancelled after client disconnect`)
+      options.onClosed?.()
     },
+  })
+}
+
+function streamResponseHeaders(
+  task: Task,
+  mode: 'stream' | 'buffered-timeline',
+  contentType: string
+) {
+  return {
+    'content-type': contentType,
+    'x-generate-tts-type': mode,
+    'x-generate-tts-id': task.id,
+    'Access-Control-Expose-Headers': 'x-generate-tts-type, x-generate-tts-id',
+  }
+}
+
+function setStreamResponseHeaders(
+  res: Response,
+  task: Task,
+  mode: 'stream' | 'buffered-timeline',
+  contentType: string
+) {
+  Object.entries(streamResponseHeaders(task, mode, contentType)).forEach(([name, value]) => {
+    res.setHeader(name, value)
   })
 }
 

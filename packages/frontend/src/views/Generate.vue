@@ -254,15 +254,11 @@
         重置配置
       </el-button>
     </div>
-    <div class="progress-bar">
-      <el-progress
-        v-if="generating"
-        style="margin: 0px auto; max-width: 400px"
-        :stroke-width="12"
-        :percentage="generationStore.progress"
-        :color="customColors"
-      />
-    </div>
+    <GenerationProgress
+      :generating="generating"
+      :progress="generationStore.progress"
+      :phase="generationStore.phase"
+    />
     <StreamButton
       ref="audioPlayerRef"
       v-if="showStreamButton"
@@ -295,6 +291,7 @@ import { defaultVoiceList, previewTextSelect } from '@/constants/voice'
 import DownloadList from '@/components/DownloadList.vue'
 import Notification from '@/assets/notification.mp3'
 import StreamButton from '@/components/StreamButton.vue'
+import GenerationProgress from '@/components/GenerationProgress.vue'
 import {
   generateTTS,
   getVoiceList,
@@ -334,19 +331,6 @@ const languages = ref([
   { code: 'en-AU', name: '英语（澳大利亚）' },
   { code: 'en-CA', name: '英语（加拿大）' },
 ])
-const customColors = [
-  { color: '#f5222d', percentage: 10 }, // 红色 (开始/较低)
-  { color: '#fa541c', percentage: 20 }, // 橘红
-  { color: '#fa8c16', percentage: 30 }, // 橘黄
-  { color: '#fadb14', percentage: 40 }, // 黄色
-  { color: '#fadb14', percentage: 50 }, // 黄色 (中间状态)
-  { color: '#a0d911', percentage: 60 }, // 酸橙绿
-  { color: '#73d13d', percentage: 70 }, // 浅绿
-  { color: '#52c41a', percentage: 80 }, // 绿色
-  { color: '#52c41a', percentage: 90 }, // 绿色 (接近完成)
-  { color: '#52c41a', percentage: 100 }, // 纯绿 (完成)
-]
-
 const handleClose = (realClose: () => void) => {
   if (generating.value) {
     ElMessageBox.confirm('确定关闭吗，这将停止当前的生成任务', '操作提示', {
@@ -357,6 +341,7 @@ const handleClose = (realClose: () => void) => {
       realClose()
       generating.value = false
       generationStore.updateProgress(0)
+      generationStore.updatePhase('idle')
       processor.value!.stop()
       showStreamButton.value = false
     })
@@ -595,6 +580,7 @@ const updateAudioList = (data: GenerateResponse) => {
   ElMessage.success('语音生成成功！')
   playSuccessSound()
   generating.value = false
+  generationStore.updatePhase('idle')
 
   const rect = confettiElement.value?.getBoundingClientRect()
   if (rect) {
@@ -614,6 +600,7 @@ const generateAudio = async () => {
 
   generating.value = true
   generationStore.updateProgress(0)
+  generationStore.updatePhase('generating-segments')
 
   try {
     const params = buildParams(inputText)
@@ -626,6 +613,7 @@ const generateAudio = async () => {
     console.error('生成失败:', error)
     commonErrorHandler(error)
     generating.value = false
+    generationStore.updatePhase('idle')
   }
 }
 
@@ -634,18 +622,21 @@ const generateAudioTask = async () => {
   if (!inputText.trim() || !canGenerate.value) return
   generating.value = true
   generationStore.updateProgress(0)
+  generationStore.updatePhase('generating-segments')
 
   try {
     const params = buildParams(inputText)
-    const stream = await createTaskStream(params)
-    if (!(stream instanceof ReadableStream)) {
-      if (stream.code && stream.data) {
-        updateAudioList(stream.data)
+    const streamResponse = await createTaskStream(params)
+    if ('code' in streamResponse) {
+      if (streamResponse.code && streamResponse.data) {
+        updateAudioList(streamResponse.data)
         return
       }
     }
-    console.log('typeof stream:', typeof stream)
-    console.log('stream instanceof ReadableStream :', stream instanceof ReadableStream)
+    const { stream, generationMode } = streamResponse
+    generationStore.updatePhase(
+      generationMode === 'buffered-timeline' ? 'timeline-mix' : 'streaming'
+    )
     showStreamButton.value = true
     const onStart = () => {
       console.log('call onStart...')
@@ -667,6 +658,7 @@ const generateAudioTask = async () => {
       audioPlayerRef.value!.audioRef!.src = newAudioUrl
       const name = `${params.voice}-${params.text.slice(0, 10)}-${Date.now()}`
       generating.value = false
+      generationStore.updatePhase('idle')
       const result = {
         audio: audioPlayerRef.value!.audioRef!.src,
         file: name,
@@ -686,6 +678,8 @@ const generateAudioTask = async () => {
     }
     const onError = (msg: string) => {
       console.error(msg)
+      generating.value = false
+      generationStore.updatePhase('idle')
     }
     processor.value = createAudioStreamProcessor(
       stream as unknown as ReadableStream,
@@ -701,6 +695,7 @@ const generateAudioTask = async () => {
     console.error('生成失败:', error)
     commonErrorHandler(error)
     generating.value = false
+    generationStore.updatePhase('idle')
   }
 }
 const beforeUnloadHandler = async (event: BeforeUnloadEvent) => {

@@ -44,12 +44,12 @@ describe('Issue #3 — interruption request toggle', () => {
     ).toEqual(expect.objectContaining({ useLLM: true, enableInterruptions: true }))
   })
 
-  it('disables interruptions when the request will use Streaming', () => {
+  it('preserves interruptions when the request will use long-text Streaming', () => {
     expect(
       buildGenerateRequest(
         config({ voiceMode: 'ai', enableInterruptions: true }),
         'Long '.repeat(40)
       )
-    ).toEqual(expect.objectContaining({ enableInterruptions: false }))
+    ).toEqual(expect.objectContaining({ enableInterruptions: true }))
   })
 })

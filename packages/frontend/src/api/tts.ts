@@ -32,6 +32,12 @@ export interface GenerateRequest {
 export interface TaskRequest {
   id: string
 }
+export type GenerationMode = 'stream' | 'buffered-timeline'
+export interface TaskStreamResponse {
+  stream: ReadableStream
+  generationMode: GenerationMode
+  taskId?: string
+}
 export interface TaskResponse {
   success: string
   url: string
@@ -135,7 +141,11 @@ export const createTaskStream = async (data: GenerateRequest) => {
     const responseData = JSON.parse(text)
     return responseData
   }
-  return response.data as ReadableStream
+  return {
+    stream: response.data as ReadableStream,
+    generationMode: ttsType === 'buffered-timeline' ? 'buffered-timeline' : 'stream',
+    taskId: response.headers['x-generate-tts-id'],
+  } satisfies TaskStreamResponse
 }
 
 export const downloadFile = (file: string) => `${api.defaults.baseURL}/download/${file}`

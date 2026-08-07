@@ -28,17 +28,29 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
     }
     const formattedBody = normalizeTtsRequest(req.body)
     task = taskManager.createTask(formattedBody)
+    const abortController = new AbortController()
     task.context = {
       req,
       res,
       body: req.body,
       diagnostics: createGenerationDiagnostics(),
+      abortSignal: abortController.signal,
     }
+    const cancelOnDisconnect = () => {
+      if (res.writableFinished || !task) return
+      abortController.abort()
+      taskManager.cancelTask(task.id, 'Client disconnected', task)
+    }
+    res.once?.('close', cancelOnDisconnect)
     logger.info('TTS stream request accepted', {
       ...ttsRequestMetadata(req.body, res, task.id),
       taskId: task.id,
     })
-    await generateTTSStream(formattedBody, task)
+    try {
+      await generateTTSStream(formattedBody, task)
+    } finally {
+      res.off?.('close', cancelOnDisconnect)
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (task) taskManager.failTask(task.id, { message }, task)
@@ -47,6 +59,7 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
       ...generationRuntimeMetadata(task?.context?.diagnostics),
       error: safeErrorMetadata(error),
     })
+    if (task?.context?.abortSignal?.aborted || res.destroyed) return
     if (finishStartedResponse(res)) return
     next(error)
   }

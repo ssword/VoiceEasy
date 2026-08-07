@@ -19,7 +19,7 @@ export function buildGenerateRequest(
   }
 
   params.useLLM = true
-  params.enableInterruptions = text.length < 200 && audioConfig.enableInterruptions
+  params.enableInterruptions = audioConfig.enableInterruptions
   params.openaiBaseUrl = audioConfig.openaiBaseUrl
   params.openaiKey = audioConfig.openaiKey
   params.openaiModel = audioConfig.openaiModel

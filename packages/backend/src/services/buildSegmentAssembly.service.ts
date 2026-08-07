@@ -38,6 +38,7 @@ export type BuildSegmentAssemblyRequest =
       segments: Iterable<TimelineBuildSegmentAudio>
       inputRoot: string
       outputFile: string
+      signal?: AbortSignal
     }
   | {
       strategy: 'stream'
@@ -78,7 +79,12 @@ export async function assembleBuildSegmentAudio(
   }
 
   if (request.strategy === 'timeline-mix') {
-    await timelineMixAudio(Array.from(request.segments), request.inputRoot, request.outputFile)
+    await timelineMixAudio(
+      Array.from(request.segments),
+      request.inputRoot,
+      request.outputFile,
+      request.signal
+    )
     return
   }
 
@@ -93,8 +99,10 @@ export async function assembleBuildSegmentAudio(
 async function timelineMixAudio(
   segments: TimelineBuildSegmentAudio[],
   inputRoot: string,
-  outputFile: string
+  outputFile: string,
+  signal?: AbortSignal
 ): Promise<void> {
+  signal?.throwIfAborted()
   if (!segments.length) throw new Error('No Build Segment audio provided for Timeline Mix')
   const resolvedInputRoot = await fs.realpath(inputRoot).catch(() => undefined)
   if (!resolvedInputRoot) throw new Error('Timeline Mix internal root is missing')
@@ -119,7 +127,7 @@ async function timelineMixAudio(
       throw new Error('Timeline Mix input is missing or empty')
     }
     internalAudioFiles.push(internalAudioFile)
-    durationsMs.push(await probeDurationMs(internalAudioFile))
+    durationsMs.push(await probeDurationMs(internalAudioFile, signal))
   }
 
   const startsMs = [0]
@@ -178,7 +186,7 @@ async function timelineMixAudio(
   )
 
   try {
-    await runMediaProcess('ffmpeg', args, 'Timeline Mix failed')
+    await runMediaProcess('ffmpeg', args, 'Timeline Mix failed', signal)
     const outputStat = await fs.stat(temporaryOutput).catch(() => undefined)
     if (!outputStat?.isFile() || outputStat.size === 0) {
       throw new Error('Timeline Mix produced empty audio')
@@ -190,7 +198,7 @@ async function timelineMixAudio(
   }
 }
 
-async function probeDurationMs(audioFile: string): Promise<number> {
+async function probeDurationMs(audioFile: string, signal?: AbortSignal): Promise<number> {
   const stdout = await runMediaProcess(
     'ffprobe',
     [
@@ -202,7 +210,8 @@ async function probeDurationMs(audioFile: string): Promise<number> {
       'default=noprint_wrappers=1:nokey=1',
       audioFile,
     ],
-    'Timeline Mix could not read input duration'
+    'Timeline Mix could not read input duration',
+    signal
   )
   const durationSeconds = Number(stdout.trim())
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
@@ -214,20 +223,33 @@ async function probeDurationMs(audioFile: string): Promise<number> {
 async function runMediaProcess(
   command: 'ffmpeg' | 'ffprobe',
   args: string[],
-  errorPrefix: string
+  errorPrefix: string,
+  signal?: AbortSignal
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortError())
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => (stdout += chunk))
     child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.once('error', (error) => reject(new Error(`${errorPrefix}: ${error.message}`)))
+    const onAbort = () => child.kill('SIGKILL')
+    signal?.addEventListener('abort', onAbort, { once: true })
+    child.once('error', (error) => {
+      signal?.removeEventListener('abort', onAbort)
+      reject(signal?.aborted ? abortError() : new Error(`${errorPrefix}: ${error.message}`))
+    })
     child.once('close', (code) => {
-      if (code === 0) resolve(stdout)
+      signal?.removeEventListener('abort', onAbort)
+      if (signal?.aborted) reject(abortError())
+      else if (code === 0) resolve(stdout)
       else reject(new Error(`${errorPrefix}: ${stderr.trim() || `process exited with ${code}`}`))
     })
   })
+}
+
+function abortError(): Error {
+  return Object.assign(new Error('Audio Assembly cancelled'), { name: 'AbortError' })
 }
 
 function isPathInside(root: string, candidate: string): boolean {
