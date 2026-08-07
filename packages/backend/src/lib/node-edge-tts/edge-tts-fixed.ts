@@ -260,20 +260,27 @@ class EdgeTTS {
       } else {
         const message = data.toString()
         if (message.includes('Path:turn.end')) {
-          if (saveSubtitles) this._saveSubFile(subFile, text, audioPath!, outputType)
-          if (outputType === 'file') {
-            audioStream!.end()
+          void (async () => {
+            if (saveSubtitles) await this._saveSubFile(subFile, text, audioPath!, outputType)
+            if (outputType === 'file') {
+              audioStream!.end()
+              _wsConnect.close()
+              resolveFile()
+            } else if (outputType === 'stream' && !isStreamDestroyed) {
+              readableStream!.push(null)
+              console.log(`close edge-tts readableStream...`)
+              _wsConnect.close()
+            } else if (outputType === 'buffer') {
+              const audioBuffer = Buffer.concat(audioChunks)
+              _wsConnect.close()
+              resolveBuffer?.(audioBuffer) // 直接调用 resolve
+            }
+          })().catch((error) => {
             _wsConnect.close()
-            resolveFile()
-          } else if (outputType === 'stream' && !isStreamDestroyed) {
-            readableStream!.push(null)
-            console.log(`close edge-tts readableStream...`)
-            _wsConnect.close()
-          } else if (outputType === 'buffer') {
-            const audioBuffer = Buffer.concat(audioChunks)
-            _wsConnect.close()
-            resolveBuffer?.(audioBuffer) // 直接调用 resolve
-          }
+            if (outputType === 'stream') readableStream?.destroy(error as Error)
+            else if (outputType === 'file') rejectFile?.(error as Error)
+            else rejectBuffer?.(error as Error)
+          })
         } else if (message.includes('Path:audio.metadata')) {
           const splitTexts = message.split('\r\n')
           try {

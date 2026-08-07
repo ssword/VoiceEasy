@@ -306,7 +306,10 @@ async function buildSegment(
   }
   return {
     audio: `${STATIC_DOMAIN}/${path.join(dir, id)}`,
-    srt: `${STATIC_DOMAIN}/${path.join(dir, id.replace('.mp3', '.srt'))}`,
+    srt:
+      engineInstance?.supportsSubtitles !== false
+        ? `${STATIC_DOMAIN}/${path.join(dir, id.replace('.mp3', '.srt'))}`
+        : '',
   }
 }
 
@@ -392,13 +395,15 @@ async function buildSegmentList(
     segmentCount: fileList.length,
     strategy: hasEffectiveInterruption ? 'timeline-mix' : 'concat',
   })
+  let segmentStartsMs: number[] | undefined
   if (hasEffectiveInterruption) {
-    await assembleBuildSegmentAudio({
+    const timelineResult = await assembleBuildSegmentAudio({
       strategy: 'timeline-mix',
       segments: generatedSegments,
       inputRoot: AUDIO_DIR,
       outputFile,
     })
+    segmentStartsMs = timelineResult.segmentStartsMs
   } else {
     await assembleBuildSegmentAudio({
       strategy: 'concat',
@@ -408,16 +413,24 @@ async function buildSegmentList(
     })
   }
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
-  const firstEngine = segments[0]?.engine || DEFAULT_ENGINE
-  const engInstance = ttsPluginManager.getEngine(firstEngine)
-  if (engInstance?.supportsSubtitles !== false) {
-    await assembleBuildSegmentSubtitles({ inputDir: tmpDirPath, audioFiles: fileList, outputFile })
+  const supportsSubtitles = results.every((result, index) => {
+    if (!result.success) return true
+    const engine = ttsPluginManager.getEngine(segments[index]?.engine || DEFAULT_ENGINE)
+    return engine?.supportsSubtitles !== false
+  })
+  if (supportsSubtitles) {
+    await assembleBuildSegmentSubtitles({
+      inputDir: tmpDirPath,
+      audioFiles: fileList,
+      outputFile,
+      segmentStartsMs,
+    })
     logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
   }
 
   return {
     audio: `${STATIC_DOMAIN}/${id}`,
-    srt: `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}`,
+    srt: supportsSubtitles ? `${STATIC_DOMAIN}/${id.replace('.mp3', '.srt')}` : '',
     partial,
   }
 }

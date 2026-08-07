@@ -7,6 +7,7 @@ import { generateSrt } from './edge-tts.service'
 import { readJson } from '../utils'
 import {
   mergeSubtitleFiles as concatSubtitleFiles,
+  placeSubtitleFilesOnTimeline,
   SubtitleFile,
   SubtitleFiles,
 } from '../utils/subtitle'
@@ -48,6 +49,10 @@ export type BuildSegmentAssemblyRequest =
       output: PassThrough
     }
 
+export interface TimelineBuildSegmentAssemblyResult {
+  segmentStartsMs: number[]
+}
+
 /**
  * Assembles already-generated Build Segment audio in caller-supplied order.
  *
@@ -55,9 +60,15 @@ export type BuildSegmentAssemblyRequest =
  * boundary owns how those ordered results become the final file or response
  * stream, so future assembly strategies have one integration point.
  */
+export function assembleBuildSegmentAudio(
+  request: Extract<BuildSegmentAssemblyRequest, { strategy: 'timeline-mix' }>
+): Promise<TimelineBuildSegmentAssemblyResult>
+export function assembleBuildSegmentAudio(
+  request: Exclude<BuildSegmentAssemblyRequest, { strategy: 'timeline-mix' }>
+): Promise<void>
 export async function assembleBuildSegmentAudio(
   request: BuildSegmentAssemblyRequest
-): Promise<void> {
+): Promise<void | TimelineBuildSegmentAssemblyResult> {
   if (request.strategy === 'stream') {
     let activeSegment: Readable | undefined
     const stopActiveSegment = () => activeSegment?.destroy()
@@ -79,13 +90,12 @@ export async function assembleBuildSegmentAudio(
   }
 
   if (request.strategy === 'timeline-mix') {
-    await timelineMixAudio(
+    return timelineMixAudio(
       Array.from(request.segments),
       request.inputRoot,
       request.outputFile,
       request.signal
     )
-    return
   }
 
   const fileList = Array.from(request.segments, (segment) => segment.audioFile)
@@ -101,7 +111,7 @@ async function timelineMixAudio(
   inputRoot: string,
   outputFile: string,
   signal?: AbortSignal
-): Promise<void> {
+): Promise<TimelineBuildSegmentAssemblyResult> {
   signal?.throwIfAborted()
   if (!segments.length) throw new Error('No Build Segment audio provided for Timeline Mix')
   const resolvedInputRoot = await fs.realpath(inputRoot).catch(() => undefined)
@@ -192,6 +202,7 @@ async function timelineMixAudio(
       throw new Error('Timeline Mix produced empty audio')
     }
     await fs.rename(temporaryOutput, outputFile)
+    return { segmentStartsMs: startsMs }
   } catch (error) {
     await fs.unlink(temporaryOutput).catch(() => undefined)
     throw error
@@ -327,6 +338,7 @@ export interface BuildSegmentSubtitleAssemblyRequest {
   audioFiles?: string[]
   jsonFiles?: string[]
   metadataFileName?: string
+  segmentStartsMs?: number[]
 }
 
 export async function assembleBuildSegmentSubtitles({
@@ -335,6 +347,7 @@ export async function assembleBuildSegmentSubtitles({
   audioFiles,
   jsonFiles,
   metadataFileName = 'all_splits.mp3.json',
+  segmentStartsMs,
 }: BuildSegmentSubtitleAssemblyRequest): Promise<void> {
   const orderedJsonFiles = jsonFiles
     ? jsonFiles
@@ -344,7 +357,9 @@ export async function assembleBuildSegmentSubtitles({
   )
   if (!subtitleFiles.length) throw new Error('No JSON files found for subtitles')
 
-  const concatenatedSubtitles = concatSubtitleFiles(subtitleFiles)
+  const concatenatedSubtitles = segmentStartsMs
+    ? placeSubtitleFilesOnTimeline(subtitleFiles, segmentStartsMs)
+    : concatSubtitleFiles(subtitleFiles)
   const tempJsonPath = path.resolve(inputDir, metadataFileName)
   await fs.writeFile(tempJsonPath, JSON.stringify(concatenatedSubtitles, null, 2))
   await generateSrt(tempJsonPath, outputFile.replace('.mp3', '.srt'))

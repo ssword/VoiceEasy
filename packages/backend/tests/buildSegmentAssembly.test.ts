@@ -103,7 +103,7 @@ describe('Build Segment audio assembly boundary', () => {
         createStereoToneMp3(second, 880, 1, 'right'),
       ])
 
-      await assembleBuildSegmentAudio({
+      const result = await assembleBuildSegmentAudio({
         strategy: 'timeline-mix',
         segments: [
           { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
@@ -124,6 +124,10 @@ describe('Build Segment audio assembly boundary', () => {
       expect(overlap.left).toBeGreaterThan(0.005)
       expect(overlap.right).toBeGreaterThan(0.02)
       expect(overlap.left).toBeLessThan(overlap.right * 0.5)
+      expect(result.segmentStartsMs).toHaveLength(2)
+      expect(result.segmentStartsMs[0]).toBe(0)
+      expect(result.segmentStartsMs[1]).toBeGreaterThan(550)
+      expect(result.segmentStartsMs[1]).toBeLessThan(700)
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }
@@ -223,6 +227,83 @@ describe('Build Segment audio assembly boundary', () => {
 
       const subtitles = await fs.readFile(outputFile.replace('.mp3', '.srt'), 'utf8')
       expect(subtitles.indexOf('First')).toBeLessThan(subtitles.indexOf('Second'))
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    {
+      name: 'ordinary order',
+      startsMs: [0, 1000],
+      files: [
+        [{ part: 'Narrator', start: 100, end: 900 }],
+        [{ part: 'Reply', start: 0, end: 700 }],
+      ],
+      expected: [
+        { part: 'Narrator', start: 100, end: 900 },
+        { part: 'Reply', start: 1000, end: 1700 },
+      ],
+    },
+    {
+      name: 'one interruption',
+      startsMs: [0, 600],
+      files: [
+        [{ part: 'Role A', start: 100, end: 900 }],
+        [{ part: 'Role B', start: 0, end: 700 }],
+      ],
+      expected: [
+        { part: 'Role A', start: 100, end: 900 },
+        { part: 'Role B', start: 600, end: 1300 },
+      ],
+    },
+    {
+      name: 'consecutive interruptions',
+      startsMs: [0, 600, 1000],
+      files: [
+        [{ part: 'Role A', start: 0, end: 900 }],
+        [{ part: 'Role B', start: 0, end: 700 }],
+        [{ part: 'Role C', start: 50, end: 650 }],
+      ],
+      expected: [
+        { part: 'Role A', start: 0, end: 900 },
+        { part: 'Role B', start: 600, end: 1300 },
+        { part: 'Role C', start: 1050, end: 1650 },
+      ],
+    },
+    {
+      name: 'overlap bounded to the previous Segment',
+      startsMs: [0, 0],
+      files: [
+        [{ part: 'Brief Role A', start: 0, end: 200 }],
+        [{ part: 'Role B', start: 20, end: 820 }],
+      ],
+      expected: [
+        { part: 'Brief Role A', start: 0, end: 200 },
+        { part: 'Role B', start: 20, end: 820 },
+      ],
+    },
+  ])('places subtitles on the Timeline Mix for $name', async ({ startsMs, files, expected }) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-srt-'))
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+    const jsonFiles = files.map((_file, index) => path.join(tempDir, `${index + 1}.json`))
+
+    try {
+      await Promise.all(
+        files.map((file, index) => fs.writeFile(jsonFiles[index], JSON.stringify(file)))
+      )
+
+      await assembleBuildSegmentSubtitles({
+        inputDir: tempDir,
+        outputFile,
+        jsonFiles,
+        segmentStartsMs: startsMs,
+      })
+
+      const metadata = JSON.parse(
+        await fs.readFile(path.join(tempDir, 'all_splits.mp3.json'), 'utf8')
+      )
+      expect(metadata).toEqual(expected)
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }

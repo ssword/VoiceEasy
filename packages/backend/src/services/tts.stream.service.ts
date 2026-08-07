@@ -259,13 +259,30 @@ async function bufferTimelineBuildSegments(segments: BuildSegment[], task: Task)
 
     setStreamResponseHeaders(res, task, 'buffered-timeline', 'audio/mpeg')
     res.flushHeaders()
-    await assembleBuildSegmentAudio({
+    const timelineResult = await assembleBuildSegmentAudio({
       strategy: 'timeline-mix',
       segments: generatedSegments,
       inputRoot: AUDIO_DIR,
       outputFile,
       signal,
     })
+    const supportsSubtitles = segments.every((item) => {
+      const engine = ttsPluginManager.getEngine(item.engine || DEFAULT_ENGINE)
+      return engine?.supportsSubtitles !== false
+    })
+    if (supportsSubtitles) {
+      const jsonFiles = await Promise.all(
+        generatedSegments.map((generatedSegment) =>
+          findStreamSubtitleJsonFile(generatedSegment.audioFile)
+        )
+      )
+      await assembleBuildSegmentSubtitles({
+        inputDir,
+        outputFile,
+        jsonFiles,
+        segmentStartsMs: timelineResult.segmentStartsMs,
+      })
+    }
     streamTaskToResponse(task, createReadStream(outputFile), {
       mode: 'buffered-timeline',
       contentType: 'audio/mpeg',
@@ -276,6 +293,18 @@ async function bufferTimelineBuildSegments(segments: BuildSegment[], task: Task)
     await fs.rm(inputDir, { recursive: true, force: true })
     throw error
   }
+}
+
+async function findStreamSubtitleJsonFile(audioFile: string): Promise<string> {
+  const subtitleDir = `${audioFile}_tmp`
+  const audioBase = path.basename(audioFile)
+  const files = (await readdir(subtitleDir)).filter(
+    (file) => file.startsWith(`${audioBase}.srt.json`) && !file.endsWith('.srt')
+  )
+  if (files.length !== 1) {
+    throw new Error(`Expected one subtitle result for Build Segment: ${audioBase}`)
+  }
+  return path.join(subtitleDir, files[0])
 }
 
 async function generateWithoutLLMStream(params: TTSParams, task: Task) {

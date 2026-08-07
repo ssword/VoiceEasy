@@ -1,4 +1,4 @@
-interface SubtitleItem {
+export interface SubtitleItem {
   part: string
   start: number
   end: number
@@ -68,6 +68,33 @@ export function mergeSubtitleFiles(subtitleFiles: SubtitleFiles, gap: number = 0
     }
     throw new SubtitleMergeError(`Failed to merge subtitles: ${(error as Error).message}`)
   }
+}
+
+/** Places each Segment's local subtitle cues at its actual Timeline Mix start. */
+export function placeSubtitleFilesOnTimeline(
+  subtitleFiles: SubtitleFiles,
+  segmentStartsMs: number[]
+): SubtitleItem[] {
+  if (!Array.isArray(subtitleFiles) || subtitleFiles.length !== segmentStartsMs.length) {
+    throw new SubtitleMergeError('Timeline starts must match subtitle files')
+  }
+
+  return subtitleFiles.flatMap((file, fileIndex) => {
+    const startMs = segmentStartsMs[fileIndex]
+    if (!Array.isArray(file) || !Number.isFinite(startMs) || startMs < 0) {
+      throw new SubtitleMergeError(`Invalid Timeline subtitle data at index ${fileIndex}`)
+    }
+    return file.map((item, itemIndex) => {
+      if (!isValidSubtitleItem(item)) {
+        throw new SubtitleMergeError(`Invalid subtitle item at file ${fileIndex}, item ${itemIndex}`)
+      }
+      return {
+        part: item.part,
+        start: item.start + startMs,
+        end: item.end + startMs,
+      }
+    })
+  })
 }
 
 // 辅助函数：验证字幕项格式

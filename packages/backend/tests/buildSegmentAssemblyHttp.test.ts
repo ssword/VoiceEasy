@@ -19,6 +19,7 @@ jest.mock('franc', () => ({
 }))
 
 const mockPipelineEvents: string[] = []
+const mockRunId = Date.now()
 let mockCancelStreamStarted: (() => void) | undefined
 let mockCancelStreamDestroyed = false
 
@@ -93,7 +94,18 @@ jest.mock('../src/utils/openai', () => ({
             },
           ]
       return {
-        choices: [{ message: { content: JSON.stringify({ segments }) } }],
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                segments: segments.map((segment) => ({
+                  ...segment,
+                  text: `${segment.text} ${mockRunId}`,
+                })),
+              }),
+            },
+          },
+        ],
       }
     }),
   },
@@ -134,11 +146,30 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     fixtureDuration = await probeAudioDuration(firstFixturePath)
 
     class FixtureEngine implements TTSEngine {
-      readonly name = 'edge-tts'
-      readonly supportsSubtitles = false
+      readonly name: string = 'edge-tts'
+      readonly supportsSubtitles: boolean = true
 
       async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
         mockPipelineEvents.push(`synthesize:${text}`)
+        if (options.saveSubtitles && options.output) {
+          const subtitle = JSON.stringify([
+            {
+              part: text.includes('Second') ? 'Role B: second' : 'Role A: first',
+              start: 0,
+              end: 900,
+            },
+          ])
+          if (options.stream) {
+            const subtitleDir = `${options.output}_tmp`
+            await fs.mkdir(subtitleDir, { recursive: true })
+            await fs.writeFile(
+              path.join(subtitleDir, `${path.basename(options.output)}.srt.json`),
+              subtitle
+            )
+          } else {
+            await fs.writeFile(`${options.output}.json`, subtitle)
+          }
+        }
         if (text.includes('Cancelled')) {
           let timer: NodeJS.Timeout | undefined
           return new Readable({
@@ -172,13 +203,18 @@ describe('Issue #2 HTTP audio assembly regression', () => {
       }
     }
 
+    class NoSubtitleFixtureEngine extends FixtureEngine {
+      readonly name = 'no-subtitles'
+      readonly supportsSubtitles = false
+    }
+
     const app = createApp({
       isDev: true,
       rateLimit: 1e6,
       rateLimitWindow: 10,
       audioDir: AUDIO_DIR,
       publicDir: PUBLIC_DIR,
-      engines: [new FixtureEngine()],
+      engines: [new FixtureEngine(), new NoSubtitleFixtureEngine()],
     })
     server = http.createServer(app)
     await new Promise<void>((resolve) => server.listen(0, resolve))
@@ -218,7 +254,11 @@ describe('Issue #2 HTTP audio assembly regression', () => {
       expect.objectContaining({
         success: true,
         code: 200,
-        data: expect.objectContaining({ audio: expect.any(String), file: expect.any(String) }),
+        data: expect.objectContaining({
+          audio: expect.any(String),
+          file: expect.any(String),
+          srt: expect.any(String),
+        }),
       })
     )
 
@@ -226,6 +266,22 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     expect(audioResponse.status).toBe(200)
     expect(audioResponse.headers.get('content-type')).toBe('audio/mpeg')
     await expectPlayableMultiSegmentAudio(await audioResponse.arrayBuffer(), 'generate.mp3')
+  })
+
+  it('returns an empty subtitle result for an Engine without subtitle capability', async () => {
+    const response = await fetch(`${baseUrl}/api/v1/tts/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: `${recommendationText} no subtitle engine`,
+        voice: 'en-US-AriaNeural',
+        engine: 'no-subtitles',
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.data.srt).toBe('')
   })
 
   it('returns real overlapping and ducked tracks from /generate when enabled', async () => {
@@ -257,6 +313,23 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     expect(overlap.left).toBeGreaterThan(0.005)
     expect(overlap.right).toBeGreaterThan(0.02)
     expect(overlap.left).toBeLessThan(overlap.right * 0.5)
+
+    const subtitleResponse = await fetch(`${baseUrl}/${path.basename(body.data.srt)}`)
+    expect(subtitleResponse.status).toBe(200)
+    const subtitles = await subtitleResponse.text()
+    expect(subtitles).toContain('Role A: first')
+    expect(subtitles).toContain('Role B: second')
+    const cueStarts = [...subtitles.matchAll(/(\d\d):(\d\d):(\d\d),(\d{3}) -->/g)].map(
+      (match) =>
+        Number(match[1]) * 3600 +
+        Number(match[2]) * 60 +
+        Number(match[3]) +
+        Number(match[4]) / 1000
+    )
+    expect(cueStarts[0]).toBe(0)
+    expect(cueStarts[1]).toBeGreaterThan(0.55)
+    expect(cueStarts[1]).toBeLessThan(0.7)
+    expect(cueStarts[1]).toBeLessThan(0.9)
   })
 
   it('preserves /createStream headers and playable ordered audio for multiple Segments', async () => {
