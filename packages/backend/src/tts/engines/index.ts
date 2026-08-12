@@ -4,6 +4,7 @@ import { OpenAITtsEngine } from './openaiTts'
 import { KokoroTtsEngine } from './kokoroTts'
 import { CosyVoiceTtsEngine } from './cosyVoiceTts'
 import { QwenAudioTtsEngine } from './qwenAudioTts'
+import { DoubaoTtsEngine } from './doubaoTts'
 import {
   REGISTER_KOKORO,
   REGISTER_OPENAI_TTS,
@@ -14,6 +15,11 @@ import {
   DASHSCOPE_WORKSPACE_ID,
   COSYVOICE_MODEL,
   QWEN_AUDIO_TTS_MODEL,
+  REGISTER_DOUBAO_TTS,
+  DOUBAO_API_KEY,
+  DOUBAO_RESOURCE_ID,
+  DOUBAO_MODEL,
+  DOUBAO_SPEAKER,
 } from '../../config'
 
 export function registerEngines() {
@@ -39,6 +45,16 @@ export function registerEngines() {
         apiKey: DASHSCOPE_API_KEY,
         workspaceId: DASHSCOPE_WORKSPACE_ID,
         model: QWEN_AUDIO_TTS_MODEL,
+      })
+    )
+  }
+  if (REGISTER_DOUBAO_TTS) {
+    ttsPluginManager.registerEngine(
+      new DoubaoTtsEngine({
+        apiKey: DOUBAO_API_KEY,
+        resourceId: DOUBAO_RESOURCE_ID,
+        model: DOUBAO_MODEL,
+        speaker: DOUBAO_SPEAKER,
       })
     )
   }

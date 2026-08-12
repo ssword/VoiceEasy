@@ -264,6 +264,7 @@ curl -X POST http://localhost:3000/api/v1/tts/generateJson \
 |------|---------|------|
 | OpenAI TTS | `REGISTER_OPENAI_TTS=true` | 需要配置 `OPENAI_API_KEY` |
 | Kokoro TTS | `REGISTER_KOKORO=true` | 需要配置 `TTS_KOKORO_URL` |
+| Doubao TTS | `REGISTER_DOUBAO_TTS=true` | 需要配置 `DOUBAO_API_KEY` 和 `DOUBAO_RESOURCE_ID` |
 
 更多引擎接入方式参考 `packages/backend/src/tts/engines/` 目录下的实现。
 
@@ -312,6 +313,11 @@ pnpm dev
 | `DASHSCOPE_API_KEY`   | -                           | 阿里云百炼 API Key            |
 | `DASHSCOPE_WORKSPACE_ID` | -                        | 阿里云百炼 Workspace ID       |
 | `COSYVOICE_MODEL`  | `cosyvoice-v3-flash`         | CosyVoice 模型名称            |
+| `REGISTER_DOUBAO_TTS` | `false` | 启用 Doubao 非流式 TTS 引擎 |
+| `DOUBAO_API_KEY` | - | Doubao API Key（仅服务端使用） |
+| `DOUBAO_RESOURCE_ID` | - | Doubao 音频资源 ID |
+| `DOUBAO_MODEL` | `seed-audio-1.0` | Doubao 非流式音频生成模型 |
+| `DOUBAO_SPEAKER` | `zh_female_tianmeitaozi_mars_bigtts` | 默认 Doubao Voice |
 
 - **配置文件**：可在 `.env` 或 `packages/backend/.env` 中设置，优先级为 `packages/backend/.env > .env`。  
 - **Docker 配置**：通过 `-e` 参数传入环境变量，如上文示例。

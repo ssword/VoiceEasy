@@ -2,9 +2,9 @@ import { Readable } from 'stream'
 
 export interface TtsOptions {
   speed?: number // 语速，0.25-4.0
-  rate?: number // 语速，0.25-4.0
-  pitch?: number // 音调，-1.0 到 1.0
-  volume?: number // 音量，0.0 到 1.0
+  rate?: number | string // 语速，0.25-4.0 or a percentage adjustment
+  pitch?: number | string // 音调，-1.0 到 1.0 or a Hz adjustment
+  volume?: number | string // 音量，0.0 到 1.0 or a percentage adjustment
   style?: string //  风格
   voice?: string // 音色名称
   format?: string // 音频格式
