@@ -1,11 +1,21 @@
+import { Readable } from 'stream'
 import { TTSEngine, TtsOptions } from '../types'
 import { fetcher } from '../../utils/request'
+import {
+  createDoubaoAudioStream,
+  defaultDoubaoWebSocketFactory,
+  DoubaoWebSocketFactory,
+} from './doubaoWebSocket'
 
 export interface DoubaoTtsConfig {
   apiKey: string
   resourceId: string
   model: string
   voice?: string
+}
+
+export interface DoubaoTtsDependencies {
+  createWebSocket?: DoubaoWebSocketFactory
 }
 
 type DoubaoResponse = {
@@ -37,8 +47,9 @@ export class DoubaoTtsEngine implements TTSEngine {
   readonly sampleRate = 24000
   readonly cacheNamespace: string
   private readonly config: Required<DoubaoTtsConfig>
+  private readonly createWebSocket: DoubaoWebSocketFactory
 
-  constructor(config: DoubaoTtsConfig) {
+  constructor(config: DoubaoTtsConfig, dependencies: DoubaoTtsDependencies = {}) {
     if (!config.apiKey) throw new Error('DOUBAO_API_KEY is required.')
     if (!config.resourceId) throw new Error('DOUBAO_RESOURCE_ID is required.')
     if (!config.model) throw new Error('DOUBAO_MODEL is required.')
@@ -46,16 +57,29 @@ export class DoubaoTtsEngine implements TTSEngine {
       ...config,
       voice: config.voice || DEFAULT_VOICE,
     }
+    this.createWebSocket = dependencies.createWebSocket || defaultDoubaoWebSocketFactory
     this.cacheNamespace = `${this.name}:${this.config.resourceId}:${this.config.model}`
   }
 
-  async synthesize(text: string, options: TtsOptions): Promise<Buffer> {
+  async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
     if (typeof text !== 'string' || text.length === 0) {
       throw new Error('Input text is required.')
     }
     if (text.length > MAX_TEXT_LENGTH) {
       throw new Error(
         `Input text exceeds ${MAX_TEXT_LENGTH} characters for synchronous Doubao TTS.`
+      )
+    }
+
+    if (options.stream) {
+      return createDoubaoAudioStream(
+        {
+          apiKey: this.config.apiKey,
+          resourceId: this.config.resourceId,
+          sessionPayload: this.buildStreamingSessionRequest(options),
+          text,
+        },
+        this.createWebSocket
       )
     }
 
@@ -96,6 +120,7 @@ export class DoubaoTtsEngine implements TTSEngine {
   }
 
   private buildRequest(text: string, options: TtsOptions): Record<string, unknown> {
+    const controls = normalizedControls(options)
     return {
       model: this.config.model,
       text_prompt: text,
@@ -103,11 +128,36 @@ export class DoubaoTtsEngine implements TTSEngine {
       audio_config: {
         format: 'mp3',
         sample_rate: this.sampleRate,
-        speech_rate: clamp(parseAdjustment(options.rate, '%', 0), -50, 100),
-        loudness_rate: clamp(parseAdjustment(options.volume, '%', 0), -50, 100),
-        pitch_rate: clamp(parseAdjustment(options.pitch, 'Hz', 0), -12, 12),
+        speech_rate: controls.speechRate,
+        loudness_rate: controls.loudnessRate,
+        pitch_rate: controls.pitch,
       },
     }
+  }
+
+  private buildStreamingSessionRequest(options: TtsOptions): Record<string, unknown> {
+    const controls = normalizedControls(options)
+    return {
+      req_params: {
+        model: this.config.model,
+        speaker: options.voice || this.config.voice,
+        audio_params: {
+          format: 'mp3',
+          sample_rate: this.sampleRate,
+          speech_rate: controls.speechRate,
+          loudness_rate: controls.loudnessRate,
+        },
+        additions: JSON.stringify({ post_process: { pitch: controls.pitch } }),
+      },
+    }
+  }
+}
+
+function normalizedControls(options: TtsOptions) {
+  return {
+    speechRate: clamp(parseAdjustment(options.rate, '%', 0), -50, 100),
+    loudnessRate: clamp(parseAdjustment(options.volume, '%', 0), -50, 100),
+    pitch: clamp(parseAdjustment(options.pitch, 'Hz', 0), -12, 12),
   }
 }
 
