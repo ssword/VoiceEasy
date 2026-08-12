@@ -76,8 +76,7 @@ export class DoubaoTtsEngine implements TTSEngine {
         {
           apiKey: this.config.apiKey,
           resourceId: this.config.resourceId,
-          sessionPayload: this.buildStreamingSessionRequest(options),
-          text,
+          payload: this.buildStreamingRequest(text, options),
         },
         this.createWebSocket
       )
@@ -135,10 +134,11 @@ export class DoubaoTtsEngine implements TTSEngine {
     }
   }
 
-  private buildStreamingSessionRequest(options: TtsOptions): Record<string, unknown> {
+  private buildStreamingRequest(text: string, options: TtsOptions): Record<string, unknown> {
     const controls = normalizedControls(options)
     return {
       req_params: {
+        text,
         model: this.config.model,
         speaker: options.voice || this.config.voice,
         audio_params: {

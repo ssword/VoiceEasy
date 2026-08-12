@@ -4,6 +4,7 @@ import { AddressInfo } from 'net'
 import { Readable } from 'stream'
 import { createApp } from '../src/app'
 import { DoubaoTtsEngine } from '../src/tts/engines/doubaoTts'
+import { TtsOptions } from '../src/tts/types'
 
 jest.mock('franc', () => ({
   franc: jest.fn(() => 'cmn'),
@@ -16,21 +17,22 @@ const AUDIO_ONLY_SERVER = 0xb
 const WITH_EVENT = 0x4
 
 const EVENTS = {
-  startConnection: 1,
   finishConnection: 2,
-  connectionStarted: 50,
   connectionFailed: 51,
   connectionFinished: 52,
-  startSession: 100,
-  cancelSession: 101,
-  finishSession: 102,
-  sessionStarted: 150,
+  sessionCanceled: 151,
   sessionFinished: 152,
   sessionFailed: 153,
-  taskRequest: 200,
   sentenceEnd: 351,
   audio: 352,
 } as const
+
+const config = {
+  apiKey: 'private-doubao-key',
+  resourceId: 'seed-tts-2.0',
+  model: 'seed-tts-2.0-standard',
+  voice: 'deployment-default-voice',
+}
 
 class FixtureSocket extends EventEmitter {
   readonly sent: Buffer[] = []
@@ -68,48 +70,37 @@ class FixtureSocket extends EventEmitter {
 class SuccessfulFixtureSocket extends FixtureSocket {
   send(data: Buffer) {
     super.send(data)
-    const frame = decodeClientFrame(Buffer.from(data))
+    const isEventFrame = (data[1] & 0x0f) === WITH_EVENT
     queueMicrotask(() => {
-      if (frame.event === EVENTS.startConnection) {
-        this.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionStarted))
-      } else if (frame.event === EVENTS.startSession) {
-        this.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionStarted))
-      } else if (frame.event === EVENTS.taskRequest) {
+      if (!isEventFrame) {
+        decodeFullRequest(Buffer.from(data))
         this.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('ID3-api-stream')))
-      } else if (frame.event === EVENTS.finishSession) {
         this.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionFinished))
-      } else if (frame.event === EVENTS.finishConnection) {
+      } else if (decodeEventFrame(Buffer.from(data)).event === EVENTS.finishConnection) {
         this.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionFinished))
       }
     })
   }
 }
 
-type DecodedClientFrame = {
-  event: number
-  sessionId?: string
-  payload: unknown
-}
-
-function decodeClientFrame(frame: Buffer): DecodedClientFrame {
+function decodeEventFrame(frame: Buffer) {
   expect([...frame.subarray(0, 4)]).toEqual([0x11, 0x14, 0x10, 0x00])
   let offset = 4
   const event = frame.readInt32BE(offset)
   offset += 4
-  let sessionId: string | undefined
-  if (event !== EVENTS.startConnection && event !== EVENTS.finishConnection) {
-    const sessionIdLength = frame.readUInt32BE(offset)
-    offset += 4
-    sessionId = frame.subarray(offset, offset + sessionIdLength).toString('utf8')
-    offset += sessionIdLength
-  }
   const payloadLength = frame.readUInt32BE(offset)
   offset += 4
   return {
     event,
-    sessionId,
     payload: JSON.parse(frame.subarray(offset, offset + payloadLength).toString('utf8')),
   }
+}
+
+function decodeFullRequest(frame: Buffer) {
+  expect([...frame.subarray(0, 4)]).toEqual([0x11, 0x10, 0x10, 0x00])
+  const payloadLength = frame.readUInt32BE(4)
+  expect(frame.length).toBe(8 + payloadLength)
+  return JSON.parse(frame.subarray(8).toString('utf8'))
 }
 
 function serverFrame(type: number, event: number, payload: Buffer | object = {}) {
@@ -146,147 +137,99 @@ async function readAll(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+async function openFixtureStream(text: string, options: TtsOptions = {}) {
+  let socket: FixtureSocket | undefined
+  const engine = new DoubaoTtsEngine(config, {
+    createWebSocket: (url, socketOptions) => {
+      socket = new FixtureSocket(url, socketOptions)
+      return socket
+    },
+  })
+  const audio = (await engine.synthesize(text, { ...options, stream: true })) as Readable
+  if (!socket) throw new Error('Expected the Doubao Engine to create a WebSocket')
+  socket.open()
+  return { audio, socket }
+}
+
 describe('Doubao TTS Engine Streaming', () => {
-  const config = {
-    apiKey: 'private-doubao-key',
-    resourceId: 'seed-tts-2.0',
-    model: 'seed-tts-2.0-standard',
-    voice: 'deployment-default-voice',
-  }
-
-  it('streams a Segment through the documented WebSocket lifecycle', async () => {
-    let socket: FixtureSocket | undefined
-    const engine = new DoubaoTtsEngine(config, {
-      createWebSocket: (url: string, options: SocketOptions) => {
-        socket = new FixtureSocket(url, options)
-        return socket
-      },
-    })
-
-    const audio = (await engine.synthesize('Progressive Doubao fixture', {
-      stream: true,
+  it('streams a Segment through the documented unidirectional request lifecycle', async () => {
+    const { audio, socket } = await openFixtureStream('Progressive Doubao fixture', {
       voice: 'requested-voice',
       rate: '+250%',
       volume: '-200%',
       pitch: '+99Hz',
-    })) as Readable
-    expect(socket).toBeDefined()
-    socket!.open()
+    })
 
-    expect(socket!.url).toBe(
+    expect(socket.url).toBe(
       'wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream'
     )
-    expect(socket!.options.headers).toEqual({
+    expect(socket.options.headers).toEqual({
       'X-Api-Key': 'private-doubao-key',
       'X-Api-Resource-Id': 'seed-tts-2.0',
       'X-Api-Request-Id': expect.stringMatching(/^[0-9a-f-]{36}$/),
     })
-    expect(decodeClientFrame(socket!.sent[0])).toEqual({
-      event: EVENTS.startConnection,
-      payload: {},
-    })
-
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionStarted))
-    const startSession = decodeClientFrame(socket!.sent[1])
-    expect(startSession).toEqual({
-      event: EVENTS.startSession,
-      sessionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
-      payload: {
-        req_params: {
-          model: 'seed-tts-2.0-standard',
-          speaker: 'requested-voice',
-          audio_params: {
-            format: 'mp3',
-            sample_rate: 24000,
-            speech_rate: 100,
-            loudness_rate: -50,
-          },
-          additions: JSON.stringify({ post_process: { pitch: 12 } }),
+    expect(decodeFullRequest(socket.sent[0])).toEqual({
+      req_params: {
+        text: 'Progressive Doubao fixture',
+        model: 'seed-tts-2.0-standard',
+        speaker: 'requested-voice',
+        audio_params: {
+          format: 'mp3',
+          sample_rate: 24000,
+          speech_rate: 100,
+          loudness_rate: -50,
         },
+        additions: JSON.stringify({ post_process: { pitch: 12 } }),
       },
     })
 
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionStarted))
-    expect(decodeClientFrame(socket!.sent[2])).toEqual({
-      event: EVENTS.taskRequest,
-      sessionId: startSession.sessionId,
-      payload: { text: 'Progressive Doubao fixture' },
-    })
-    expect(decodeClientFrame(socket!.sent[3])).toEqual({
-      event: EVENTS.finishSession,
-      sessionId: startSession.sessionId,
-      payload: {},
-    })
-
     const firstChunk = new Promise<Buffer>((resolve) => audio.once('data', resolve))
-    socket!.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('ID3-first')))
+    socket.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('ID3-first')))
     await expect(firstChunk).resolves.toEqual(Buffer.from('ID3-first'))
 
     let ended = false
     audio.once('end', () => {
       ended = true
     })
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sentenceEnd))
+    socket.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sentenceEnd))
     await new Promise((resolve) => setImmediate(resolve))
     expect(ended).toBe(false)
 
     const complete = readAll(audio)
-    socket!.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('-second')))
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionFinished))
-    expect(decodeClientFrame(socket!.sent[4])).toEqual({
+    socket.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('-second')))
+    socket.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionFinished))
+    expect(decodeEventFrame(socket.sent[1])).toEqual({
       event: EVENTS.finishConnection,
       payload: {},
     })
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionFinished))
+    socket.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionFinished))
 
     await expect(complete).resolves.toEqual(Buffer.from('-second'))
-    expect(socket!.closeCalls).toBe(1)
+    expect(socket.closeCalls).toBe(1)
   })
 
   it.each([
     ['connection', EVENTS.connectionFailed, { code: 401, message: 'authentication rejected' }],
     ['session', EVENTS.sessionFailed, { code: 550, message: 'synthesis rejected' }],
   ])('propagates a %s failure without exposing credentials', async (_scope, event, payload) => {
-    let socket: FixtureSocket | undefined
-    const engine = new DoubaoTtsEngine(config, {
-      createWebSocket: (url: string, options: SocketOptions) => {
-        socket = new FixtureSocket(url, options)
-        return socket
-      },
-    })
-    const audio = (await engine.synthesize('failure fixture', { stream: true })) as Readable
+    const { audio, socket } = await openFixtureStream('failure fixture')
     const result = readAll(audio)
-    socket!.open()
-    if (event === EVENTS.sessionFailed) {
-      socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionStarted))
-      socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionStarted))
-    }
 
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, event, payload))
+    socket.receive(serverFrame(FULL_SERVER_RESPONSE, event, payload))
 
     await expect(result).rejects.toThrow(String(payload.code))
     await expect(result).rejects.not.toThrow(config.apiKey)
-    expect(socket!.closeCalls).toBe(1)
+    expect(socket.closeCalls).toBe(1)
   })
 
   it('rejects a mid-stream failure after forwarding earlier audio', async () => {
-    let socket: FixtureSocket | undefined
-    const engine = new DoubaoTtsEngine(config, {
-      createWebSocket: (url: string, options: SocketOptions) => {
-        socket = new FixtureSocket(url, options)
-        return socket
-      },
-    })
-    const audio = (await engine.synthesize('mid-stream fixture', { stream: true })) as Readable
-    socket!.open()
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionStarted))
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionStarted))
+    const { audio, socket } = await openFixtureStream('mid-stream fixture')
     const firstChunk = new Promise<Buffer>((resolve) => audio.once('data', resolve))
-    socket!.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('ID3-partial')))
+    socket.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('ID3-partial')))
     await expect(firstChunk).resolves.toEqual(Buffer.from('ID3-partial'))
     const result = readAll(audio)
 
-    socket!.receive(
+    socket.receive(
       serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionFailed, {
         code: 503,
         message: 'upstream interrupted',
@@ -294,7 +237,7 @@ describe('Doubao TTS Engine Streaming', () => {
     )
 
     await expect(result).rejects.toThrow(/503.*upstream interrupted/i)
-    expect(socket!.closeCalls).toBe(1)
+    expect(socket.closeCalls).toBe(1)
   })
 
   it.each([
@@ -305,51 +248,35 @@ describe('Doubao TTS Engine Streaming', () => {
       /zero audio bytes/i,
     ],
   ])('rejects %s', async (_name, terminalFrame, expected) => {
-    let socket: FixtureSocket | undefined
-    const engine = new DoubaoTtsEngine(config, {
-      createWebSocket: (url: string, options: SocketOptions) => {
-        socket = new FixtureSocket(url, options)
-        return socket
-      },
-    })
-    const audio = (await engine.synthesize('invalid fixture', { stream: true })) as Readable
+    const { audio, socket } = await openFixtureStream('invalid fixture')
     const result = readAll(audio)
-    socket!.open()
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionStarted))
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionStarted))
 
-    socket!.receive(terminalFrame)
+    socket.receive(terminalFrame)
 
     await expect(result).rejects.toThrow(expected)
-    expect(socket!.closeCalls).toBe(1)
+    expect(socket.closeCalls).toBe(1)
   })
 
-  it('cancels the session and closes the WebSocket when the client closes the stream', async () => {
-    let socket: FixtureSocket | undefined
-    const engine = new DoubaoTtsEngine(config, {
-      createWebSocket: (url: string, options: SocketOptions) => {
-        socket = new FixtureSocket(url, options)
-        return socket
-      },
-    })
-    const audio = (await engine.synthesize('client cancellation fixture', {
-      stream: true,
-    })) as Readable
-    socket!.open()
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.connectionStarted))
-    socket!.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionStarted))
+  it('closes the WebSocket without reporting success when the client closes the stream', async () => {
+    const { audio, socket } = await openFixtureStream('client cancellation fixture')
     const closed = new Promise<void>((resolve) => audio.once('close', resolve))
 
     audio.destroy()
     await closed
 
-    expect(decodeClientFrame(socket!.sent[4])).toEqual({
-      event: EVENTS.cancelSession,
-      sessionId: decodeClientFrame(socket!.sent[1]).sessionId,
-      payload: {},
-    })
-    expect(socket!.closeCalls).toBe(1)
+    expect(socket.sent).toHaveLength(1)
+    expect(socket.closeCalls).toBe(1)
     expect(audio.readableEnded).toBe(false)
+  })
+
+  it('rejects an upstream cancellation event', async () => {
+    const { audio, socket } = await openFixtureStream('upstream cancellation fixture')
+    const result = readAll(audio)
+
+    socket.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionCanceled))
+
+    await expect(result).rejects.toThrow(/canceled upstream/i)
+    expect(socket.closeCalls).toBe(1)
   })
 })
 

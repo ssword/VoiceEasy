@@ -10,20 +10,14 @@ const ERROR_RESPONSE = 0xf
 const WITH_EVENT = 0x4
 
 const EVENTS = {
-  startConnection: 1,
   finishConnection: 2,
   connectionStarted: 50,
   connectionFailed: 51,
   connectionFinished: 52,
-  startSession: 100,
-  cancelSession: 101,
-  finishSession: 102,
-  sessionStarted: 150,
   sessionCanceled: 151,
   sessionFinished: 152,
   sessionFailed: 153,
   usageResponse: 154,
-  taskRequest: 200,
   sentenceStart: 350,
   sentenceEnd: 351,
   audio: 352,
@@ -50,8 +44,7 @@ export type DoubaoWebSocketFactory = (
 export interface DoubaoStreamingRequest {
   apiKey: string
   resourceId: string
-  sessionPayload: Record<string, unknown>
-  text: string
+  payload: Record<string, unknown>
 }
 
 type ServerFrame = {
@@ -66,10 +59,8 @@ export const defaultDoubaoWebSocketFactory: DoubaoWebSocketFactory = (url, optio
 
 export function createDoubaoAudioStream(
   request: DoubaoStreamingRequest,
-  createWebSocket: DoubaoWebSocketFactory = defaultDoubaoWebSocketFactory
+  createWebSocket: DoubaoWebSocketFactory
 ): Readable {
-  const sessionId = randomUUID()
-  let sessionStarted = false
   let sessionFinished = false
   let connectionFinished = false
   let audioBytes = 0
@@ -81,9 +72,6 @@ export function createDoubaoAudioStream(
     read() {},
     destroy(error, callback) {
       clearTimeout(timeout)
-      if (!sessionFinished && sessionStarted && socket?.readyState === 1) {
-        sendFrame(socket, EVENTS.cancelSession, {}, sessionId)
-      }
       if (!connectionFinished && socket && socket.readyState <= 1) socket.close()
       callback(error)
     },
@@ -119,9 +107,9 @@ export function createDoubaoAudioStream(
   socket.on('open', () => {
     resetTimeout()
     try {
-      sendFrame(socket, EVENTS.startConnection, {})
+      sendFullRequest(socket, request.payload)
     } catch {
-      fail(new Error('Doubao Streaming WebSocket connection failed.'))
+      fail(new Error('Doubao Streaming failed to submit the synthesis request.'))
     }
   })
 
@@ -146,24 +134,8 @@ export function createDoubaoAudioStream(
     }
 
     switch (frame.event) {
-      case EVENTS.connectionStarted:
-        try {
-          sendFrame(socket, EVENTS.startSession, request.sessionPayload, sessionId)
-        } catch {
-          fail(new Error('Doubao Streaming failed to start the synthesis session.'))
-        }
-        return
       case EVENTS.connectionFailed:
         fail(upstreamError('connection', frame.payload))
-        return
-      case EVENTS.sessionStarted:
-        sessionStarted = true
-        try {
-          sendFrame(socket, EVENTS.taskRequest, { text: request.text }, sessionId)
-          sendFrame(socket, EVENTS.finishSession, {}, sessionId)
-        } catch {
-          fail(new Error('Doubao Streaming failed to submit the synthesis task.'))
-        }
         return
       case EVENTS.sessionCanceled:
         fail(new Error('Doubao Streaming synthesis was canceled upstream.'))
@@ -180,10 +152,6 @@ export function createDoubaoAudioStream(
         stream.push(frame.payload)
         return
       case EVENTS.sessionFinished:
-        if (!sessionStarted) {
-          fail(new Error('Doubao Streaming ended an unstarted session.'))
-          return
-        }
         if (audioBytes === 0) {
           fail(new Error('Doubao Streaming completed with zero audio bytes.'))
           return
@@ -192,7 +160,7 @@ export function createDoubaoAudioStream(
         clearTimeout(timeout)
         stream.push(null)
         try {
-          sendFrame(socket, EVENTS.finishConnection, {})
+          sendEventFrame(socket, EVENTS.finishConnection, {})
           resetTimeout()
         } catch {
           if (socket.readyState <= 1) socket.close()
@@ -241,27 +209,26 @@ export function createDoubaoAudioStream(
   return stream
 }
 
-function sendFrame(
+function sendFullRequest(socket: DoubaoWebSocketLike, payload: Record<string, unknown>) {
+  const payloadBytes = Buffer.from(JSON.stringify(payload))
+  const frame = Buffer.alloc(4 + 4 + payloadBytes.length)
+  frame.set([0x11, FULL_CLIENT_REQUEST << 4, 0x10, 0x00], 0)
+  frame.writeUInt32BE(payloadBytes.length, 4)
+  payloadBytes.copy(frame, 8)
+  socket.send(frame)
+}
+
+function sendEventFrame(
   socket: DoubaoWebSocketLike,
   event: number,
-  payload: Record<string, unknown>,
-  sessionId?: string
+  payload: Record<string, unknown>
 ) {
   const payloadBytes = Buffer.from(JSON.stringify(payload))
-  const sessionBytes = sessionId ? Buffer.from(sessionId) : Buffer.alloc(0)
-  const frame = Buffer.alloc(
-    4 + 4 + (sessionId ? 4 + sessionBytes.length : 0) + 4 + payloadBytes.length
-  )
+  const frame = Buffer.alloc(4 + 4 + 4 + payloadBytes.length)
   frame.set([0x11, (FULL_CLIENT_REQUEST << 4) | WITH_EVENT, 0x10, 0x00], 0)
   let offset = 4
   frame.writeInt32BE(event, offset)
   offset += 4
-  if (sessionId) {
-    frame.writeUInt32BE(sessionBytes.length, offset)
-    offset += 4
-    sessionBytes.copy(frame, offset)
-    offset += sessionBytes.length
-  }
   frame.writeUInt32BE(payloadBytes.length, offset)
   offset += 4
   payloadBytes.copy(frame, offset)
