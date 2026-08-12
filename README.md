@@ -317,7 +317,7 @@ pnpm dev
 | `DOUBAO_API_KEY` | - | Doubao API Key（仅服务端使用） |
 | `DOUBAO_RESOURCE_ID` | - | Doubao 音频资源 ID |
 | `DOUBAO_MODEL` | `seed-audio-1.0` | Doubao 非流式音频生成模型 |
-| `DOUBAO_SPEAKER` | `zh_female_tianmeitaozi_mars_bigtts` | 默认 Doubao Voice |
+| `DOUBAO_VOICE` | `zh_female_tianmeitaozi_mars_bigtts` | 默认 Doubao Voice |
 
 - **配置文件**：可在 `.env` 或 `packages/backend/.env` 中设置，优先级为 `packages/backend/.env > .env`。  
 - **Docker 配置**：通过 `-e` 参数传入环境变量，如上文示例。

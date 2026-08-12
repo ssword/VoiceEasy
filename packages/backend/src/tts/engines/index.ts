@@ -19,7 +19,7 @@ import {
   DOUBAO_API_KEY,
   DOUBAO_RESOURCE_ID,
   DOUBAO_MODEL,
-  DOUBAO_SPEAKER,
+  DOUBAO_VOICE,
 } from '../../config'
 
 export function registerEngines() {
@@ -54,7 +54,7 @@ export function registerEngines() {
         apiKey: DOUBAO_API_KEY,
         resourceId: DOUBAO_RESOURCE_ID,
         model: DOUBAO_MODEL,
-        speaker: DOUBAO_SPEAKER,
+        voice: DOUBAO_VOICE,
       })
     )
   }

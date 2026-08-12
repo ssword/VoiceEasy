@@ -1,4 +1,3 @@
-import { Readable } from 'stream'
 import { TTSEngine, TtsOptions } from '../types'
 import { fetcher } from '../../utils/request'
 
@@ -6,7 +5,7 @@ export interface DoubaoTtsConfig {
   apiKey: string
   resourceId: string
   model: string
-  speaker?: string
+  voice?: string
 }
 
 type DoubaoResponse = {
@@ -16,12 +15,12 @@ type DoubaoResponse = {
 }
 
 const ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/create'
-const DEFAULT_SPEAKER = 'zh_female_tianmeitaozi_mars_bigtts'
+const DEFAULT_VOICE = 'zh_female_tianmeitaozi_mars_bigtts'
 const MAX_TEXT_LENGTH = 3000
 
 const DOUBAO_VOICES = [
   {
-    Name: DEFAULT_SPEAKER,
+    Name: DEFAULT_VOICE,
     cnName: '甜美桃子',
     Gender: 'Female',
     language: 'zh-CN',
@@ -45,17 +44,19 @@ export class DoubaoTtsEngine implements TTSEngine {
     if (!config.model) throw new Error('DOUBAO_MODEL is required.')
     this.config = {
       ...config,
-      speaker: config.speaker || DEFAULT_SPEAKER,
+      voice: config.voice || DEFAULT_VOICE,
     }
     this.cacheNamespace = `${this.name}:${this.config.resourceId}:${this.config.model}`
   }
 
-  async synthesize(text: string, options: TtsOptions): Promise<Buffer | Readable> {
+  async synthesize(text: string, options: TtsOptions): Promise<Buffer> {
     if (typeof text !== 'string' || text.length === 0) {
       throw new Error('Input text is required.')
     }
     if (text.length > MAX_TEXT_LENGTH) {
-      throw new Error(`Input text exceeds ${MAX_TEXT_LENGTH} characters for synchronous Doubao TTS.`)
+      throw new Error(
+        `Input text exceeds ${MAX_TEXT_LENGTH} characters for synchronous Doubao TTS.`
+      )
     }
 
     let response
@@ -98,7 +99,7 @@ export class DoubaoTtsEngine implements TTSEngine {
     return {
       model: this.config.model,
       text_prompt: text,
-      speaker: options.voice || this.config.speaker,
+      speaker: options.voice || this.config.voice,
       audio_config: {
         format: 'mp3',
         sample_rate: this.sampleRate,

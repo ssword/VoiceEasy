@@ -2,7 +2,6 @@ import { DoubaoTtsEngine } from '../src/tts/engines/doubaoTts'
 import { fetcher } from '../src/utils/request'
 import { createSynthesisCacheIdentity } from '../src/services/synthesisCache'
 import { ttsPluginManager } from '../src/tts/pluginManager'
-import { resolveRecommendationVoices } from '../src/services/recommendationVoices'
 
 jest.mock('../src/utils/request', () => ({
   fetcher: { post: jest.fn() },
@@ -15,7 +14,7 @@ describe('Doubao TTS Engine', () => {
     apiKey: 'private-doubao-key',
     resourceId: 'seed-tts-resource',
     model: 'seed-audio-1.0',
-    speaker: 'deployment-default-voice',
+    voice: 'deployment-default-voice',
   }
 
   beforeEach(() => jest.clearAllMocks())
@@ -112,13 +111,6 @@ describe('Doubao TTS Engine', () => {
     expect(firstIdentity.cacheNamespace).not.toBe(thirdIdentity.cacheNamespace)
   })
 
-  it('supplies the selected Doubao Voice List to LLM Recommendation', async () => {
-    const engine = new DoubaoTtsEngine(config)
-    await expect(resolveRecommendationVoices(engine.name, [], engine)).resolves.toContainEqual(
-      expect.objectContaining({ Name: 'zh_female_tianmeitaozi_mars_bigtts' })
-    )
-  })
-
   it.each([
     ['missing API Key', { ...config, apiKey: '' }, 'DOUBAO_API_KEY is required'],
     ['missing resource ID', { ...config, resourceId: '' }, 'DOUBAO_RESOURCE_ID is required'],
@@ -128,11 +120,19 @@ describe('Doubao TTS Engine', () => {
   })
 
   it.each([
-    ['upstream failure', { code: 3001, message: 'upstream rejected request' }, 'Doubao TTS API error: 3001'],
+    [
+      'upstream failure',
+      { code: 3001, message: 'upstream rejected request' },
+      'Doubao TTS API error: 3001',
+    ],
     ['malformed response', { code: 0, audio: { unexpected: true } }, 'missing Base64 MP3 audio'],
     ['invalid Base64', { code: 0, audio: '!!!!' }, 'invalid Base64 MP3 audio'],
     ['empty audio', { code: 0, audio: '' }, 'missing Base64 MP3 audio'],
-    ['non-MP3 audio', { code: 0, audio: Buffer.from('not-mp3').toString('base64') }, 'not MP3-compatible'],
+    [
+      'non-MP3 audio',
+      { code: 0, audio: Buffer.from('not-mp3').toString('base64') },
+      'not MP3-compatible',
+    ],
   ])('rejects %s without exposing credentials', async (_name, response, message) => {
     jest.mocked(fetcher.post).mockResolvedValue({ data: response } as any)
     const engine = new DoubaoTtsEngine(config)

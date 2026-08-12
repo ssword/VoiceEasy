@@ -47,7 +47,7 @@ export const REGISTER_DOUBAO_TTS = process.env.REGISTER_DOUBAO_TTS === 'true' ||
 export const DOUBAO_API_KEY = process.env.DOUBAO_API_KEY || ''
 export const DOUBAO_RESOURCE_ID = process.env.DOUBAO_RESOURCE_ID || ''
 export const DOUBAO_MODEL = process.env.DOUBAO_MODEL || 'seed-audio-1.0'
-export const DOUBAO_SPEAKER = process.env.DOUBAO_SPEAKER || ''
+export const DOUBAO_VOICE = process.env.DOUBAO_VOICE || ''
 
 export const LIMIT_TEXT_LENGTH = parseInt(process.env.LIMIT_TEXT_LENGTH || '0')
 export const LIMIT_TEXT_LENGTH_ERROR_MESSAGE = process.env.LIMIT_TEXT_LENGTH_ERROR_MESSAGE
