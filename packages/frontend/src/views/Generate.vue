@@ -728,21 +728,31 @@ onBeforeMount(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
-const fetchVoices = async (engineName: string) => {
+let latestVoiceListRequest = 0
+const fetchVoices = async (engineName: string): Promise<boolean> => {
+  const requestId = ++latestVoiceListRequest
   voiceListLoading.value = true
   try {
     const response = await getVoiceList(engineName)
+    if (requestId !== latestVoiceListRequest) return false
     const rawVoices = response?.data!
     // Normalize: engines like CosyVoice return string[], EdgeTTS returns Voice[]
     voiceList.value = rawVoices.map((v: any) =>
       typeof v === 'string' ? { Name: v, Gender: 'All', ContentCategories: [], VoicePersonalities: [] } : v
     )
   } catch (error) {
+    if (requestId !== latestVoiceListRequest) return false
     console.error('Failed to fetch voice list:', error)
     voiceList.value = defaultVoiceList
   } finally {
-    voiceListLoading.value = false
+    if (requestId === latestVoiceListRequest) voiceListLoading.value = false
   }
+  return true
+}
+
+const syncEngineCapability = (engineName: string) => {
+  const engineInfo = engines.value.find((engine) => engine.name === engineName)
+  updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
 }
 
 const syncEngineSelection = (engineName: string) => {
@@ -759,8 +769,9 @@ const syncEngineSelection = (engineName: string) => {
 }
 
 const handleEngineChange = async (engineName: string) => {
-  await fetchVoices(engineName)
-  syncEngineSelection(engineName)
+  syncEngineCapability(engineName)
+  const isLatestRequest = await fetchVoices(engineName)
+  if (isLatestRequest && audioConfig.engine === engineName) syncEngineSelection(engineName)
 }
 
 onMounted(async () => {
@@ -769,8 +780,9 @@ onMounted(async () => {
     const engResponse = await getEngines()
     engines.value = engResponse?.data!
     // Load voices for the current/default engine
-    await fetchVoices(audioConfig.engine)
-    syncEngineSelection(audioConfig.engine)
+    const initialEngine = audioConfig.engine
+    syncEngineCapability(initialEngine)
+    if (await fetchVoices(initialEngine)) syncEngineSelection(initialEngine)
   } catch (error) {
     handle429(error)
   }

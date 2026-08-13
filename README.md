@@ -256,7 +256,40 @@ curl -X POST http://localhost:3000/api/v1/tts/generateJson \
 
 > **注意**：CosyVoice 目前不支持字幕（SRT）生成，`supportsSubtitles: false`。
 
-#### 6. 其他引擎
+### Doubao TTS 引擎
+
+Doubao 同时支持普通生成和单向 WebSocket 流式生成。长文本仍通过 EasyVoice 的 Build Segment 流程拆分，因此不会把超出同步接口限制的整段文本直接发给上游。
+
+在 `.env` 或 `packages/backend/.env` 中配置以下服务端变量：
+
+```bash
+REGISTER_DOUBAO_TTS=true
+DOUBAO_API_KEY=your-api-key
+DOUBAO_RESOURCE_ID=seed-tts-2.0
+DOUBAO_MODEL=seed-audio-1.0
+DOUBAO_VOICE=zh_female_tianmeitaozi_mars_bigtts
+```
+
+- `DOUBAO_API_KEY` 和 `DOUBAO_RESOURCE_ID` 必填；API Key 只应保存在服务端环境中，不能提交到仓库或传给浏览器。
+- `DOUBAO_MODEL` 和 `DOUBAO_VOICE` 可覆盖默认模型与 Voice。
+- 普通生成使用 `/api/v1/tts/generate`；流式及长文本生成使用 `/api/v1/tts/createStream`，请求中设置 `"engine": "doubao-tts"`。
+- Doubao 当前返回 MP3，但不生成字幕；引擎发现接口会返回 `supportsSubtitles: false`。
+- 诊断日志只保留 Engine、资源 ID、状态和音频字节数等有界元数据，不记录 API Key、授权请求头或完整原文。
+
+示例：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tts/createStream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "这是一段使用豆包引擎生成的文本。",
+    "voice": "zh_female_tianmeitaozi_mars_bigtts",
+    "engine": "doubao-tts"
+  }' \
+  -o doubao.mp3
+```
+
+#### 其他引擎
 
 项目还支持以下引擎，通过环境变量启用：
 
@@ -313,10 +346,10 @@ pnpm dev
 | `DASHSCOPE_API_KEY`   | -                           | 阿里云百炼 API Key            |
 | `DASHSCOPE_WORKSPACE_ID` | -                        | 阿里云百炼 Workspace ID       |
 | `COSYVOICE_MODEL`  | `cosyvoice-v3-flash`         | CosyVoice 模型名称            |
-| `REGISTER_DOUBAO_TTS` | `false` | 启用 Doubao 非流式 TTS 引擎 |
+| `REGISTER_DOUBAO_TTS` | `false` | 启用 Doubao 普通及流式 TTS 引擎 |
 | `DOUBAO_API_KEY` | - | Doubao API Key（仅服务端使用） |
 | `DOUBAO_RESOURCE_ID` | - | Doubao 音频资源 ID |
-| `DOUBAO_MODEL` | `seed-audio-1.0` | Doubao 非流式音频生成模型 |
+| `DOUBAO_MODEL` | `seed-audio-1.0` | Doubao 音频生成模型 |
 | `DOUBAO_VOICE` | `zh_female_tianmeitaozi_mars_bigtts` | 默认 Doubao Voice |
 
 - **配置文件**：可在 `.env` 或 `packages/backend/.env` 中设置，优先级为 `packages/backend/.env > .env`。  

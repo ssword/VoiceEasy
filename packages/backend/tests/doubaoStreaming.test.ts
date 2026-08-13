@@ -5,9 +5,19 @@ import { Readable } from 'stream'
 import { createApp } from '../src/app'
 import { DoubaoTtsEngine } from '../src/tts/engines/doubaoTts'
 import { TtsOptions } from '../src/tts/types'
+import { logger } from '../src/utils/logger'
 
 jest.mock('franc', () => ({
   franc: jest.fn(() => 'cmn'),
+}))
+
+jest.mock('../src/utils/logger', () => ({
+  logger: {
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  },
 }))
 
 type SocketOptions = { headers?: Record<string, string> }
@@ -152,6 +162,8 @@ async function openFixtureStream(text: string, options: TtsOptions = {}) {
 }
 
 describe('Doubao TTS Engine Streaming', () => {
+  beforeEach(() => jest.clearAllMocks())
+
   it('streams a Segment through the documented unidirectional request lifecycle', async () => {
     const { audio, socket } = await openFixtureStream('Progressive Doubao fixture', {
       voice: 'requested-voice',
@@ -206,6 +218,25 @@ describe('Doubao TTS Engine Streaming', () => {
 
     await expect(complete).resolves.toEqual(Buffer.from('-second'))
     expect(socket.closeCalls).toBe(1)
+  })
+
+  it('records safe Streaming completion diagnostics', async () => {
+    const { audio, socket } = await openFixtureStream('PRIVATE_STREAMING_SOURCE')
+    const complete = readAll(audio)
+
+    socket.receive(serverFrame(AUDIO_ONLY_SERVER, EVENTS.audio, Buffer.from('ID3-stream')))
+    socket.receive(serverFrame(FULL_SERVER_RESPONSE, EVENTS.sessionFinished))
+    await complete
+
+    expect(logger.info).toHaveBeenCalledWith('Doubao Streaming completed', {
+      engine: 'doubao-tts',
+      resourceId: 'seed-tts-2.0',
+      status: 'completed',
+      audioBytes: Buffer.byteLength('ID3-stream'),
+    })
+    const logs = JSON.stringify(jest.mocked(logger.info).mock.calls)
+    expect(logs).not.toContain('PRIVATE_STREAMING_SOURCE')
+    expect(logs).not.toContain(config.apiKey)
   })
 
   it.each([

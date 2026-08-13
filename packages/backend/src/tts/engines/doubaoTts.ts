@@ -1,6 +1,7 @@
 import { Readable } from 'stream'
 import { TTSEngine, TtsOptions } from '../types'
 import { fetcher } from '../../utils/request'
+import { logger } from '../../utils/logger'
 import {
   createDoubaoAudioStream,
   defaultDoubaoWebSocketFactory,
@@ -77,6 +78,17 @@ export class DoubaoTtsEngine implements TTSEngine {
           apiKey: this.config.apiKey,
           resourceId: this.config.resourceId,
           payload: this.buildStreamingRequest(text, options),
+          onDiagnostic: ({ status, audioBytes }) => {
+            logger[status === 'completed' ? 'info' : 'warn'](
+              `Doubao Streaming ${status}`,
+              {
+                engine: this.name,
+                resourceId: this.config.resourceId,
+                status,
+                audioBytes,
+              }
+            )
+          },
         },
         this.createWebSocket
       )
@@ -97,13 +109,37 @@ export class DoubaoTtsEngine implements TTSEngine {
       )
     } catch (error) {
       const status = (error as { response?: { status?: number } })?.response?.status
+      logger.warn('Doubao synthesis failed', {
+        engine: this.name,
+        resourceId: this.config.resourceId,
+        status: status ?? 'unavailable',
+        audioBytes: 0,
+      })
       throw new Error(
         status
           ? `Doubao TTS upstream request failed with status ${status}.`
           : 'Doubao TTS upstream request failed.'
       )
     }
-    return decodeAudio(response.data)
+    let audio: Buffer
+    try {
+      audio = decodeAudio(response.data)
+    } catch (error) {
+      logger.warn('Doubao synthesis failed', {
+        engine: this.name,
+        resourceId: this.config.resourceId,
+        status: response.status ?? 200,
+        audioBytes: 0,
+      })
+      throw error
+    }
+    logger.info('Doubao synthesis completed', {
+      engine: this.name,
+      resourceId: this.config.resourceId,
+      status: response.status ?? 200,
+      audioBytes: audio.length,
+    })
+    return audio
   }
 
   async getSupportedLanguages(): Promise<string[]> {

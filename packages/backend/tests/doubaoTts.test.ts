@@ -2,9 +2,17 @@ import { DoubaoTtsEngine } from '../src/tts/engines/doubaoTts'
 import { fetcher } from '../src/utils/request'
 import { createSynthesisCacheIdentity } from '../src/services/synthesisCache'
 import { ttsPluginManager } from '../src/tts/pluginManager'
+import { logger } from '../src/utils/logger'
 
 jest.mock('../src/utils/request', () => ({
   fetcher: { post: jest.fn() },
+}))
+
+jest.mock('../src/utils/logger', () => ({
+  logger: {
+    info: jest.fn(),
+    warn: jest.fn(),
+  },
 }))
 
 const mp3 = Buffer.from('ID3-deterministic-doubao-audio').toString('base64')
@@ -149,6 +157,75 @@ describe('Doubao TTS Engine', () => {
       'Doubao TTS upstream request failed with status 401.'
     )
     await expect(engine.synthesize('transport failure', {})).rejects.not.toThrow(config.apiKey)
+  })
+
+  it('records safe completion diagnostics without source text or credentials', async () => {
+    jest.mocked(fetcher.post).mockResolvedValue({
+      status: 200,
+      data: { code: 0, audio: mp3 },
+    } as any)
+    const engine = new DoubaoTtsEngine(config)
+
+    await engine.synthesize('PRIVATE_DOUBAO_SOURCE_TEXT', {})
+
+    expect(logger.info).toHaveBeenCalledWith('Doubao synthesis completed', {
+      engine: 'doubao-tts',
+      resourceId: 'seed-tts-resource',
+      status: 200,
+      audioBytes: Buffer.from('ID3-deterministic-doubao-audio').length,
+    })
+    const logs = JSON.stringify(jest.mocked(logger.info).mock.calls)
+    expect(logs).not.toContain('PRIVATE_DOUBAO_SOURCE_TEXT')
+    expect(logs).not.toContain(config.apiKey)
+    expect(logs).not.toContain('X-Api-Key')
+  })
+
+  it('records safe failure diagnostics with upstream status', async () => {
+    jest.mocked(fetcher.post).mockRejectedValue({
+      response: { status: 429 },
+      config: {
+        headers: { 'X-Api-Key': config.apiKey, Authorization: `Bearer ${config.apiKey}` },
+        data: { text_prompt: 'PRIVATE_DOUBAO_FAILURE_TEXT' },
+      },
+    })
+    const engine = new DoubaoTtsEngine(config)
+
+    await expect(engine.synthesize('PRIVATE_DOUBAO_FAILURE_TEXT', {})).rejects.toThrow(
+      'status 429'
+    )
+
+    expect(logger.warn).toHaveBeenCalledWith('Doubao synthesis failed', {
+      engine: 'doubao-tts',
+      resourceId: 'seed-tts-resource',
+      status: 429,
+      audioBytes: 0,
+    })
+    const logs = JSON.stringify(jest.mocked(logger.warn).mock.calls)
+    expect(logs).not.toContain('PRIVATE_DOUBAO_FAILURE_TEXT')
+    expect(logs).not.toContain(config.apiKey)
+    expect(logs).not.toContain('Authorization')
+  })
+
+  it('records a safe failure when a successful transport returns an API error', async () => {
+    jest.mocked(fetcher.post).mockResolvedValue({
+      status: 200,
+      data: { code: 3001, message: 'PRIVATE_UPSTREAM_DETAIL' },
+    } as any)
+    const engine = new DoubaoTtsEngine(config)
+
+    await expect(engine.synthesize('PRIVATE_DOUBAO_API_ERROR_TEXT', {})).rejects.toThrow(
+      'Doubao TTS API error: 3001'
+    )
+
+    expect(logger.warn).toHaveBeenCalledWith('Doubao synthesis failed', {
+      engine: 'doubao-tts',
+      resourceId: 'seed-tts-resource',
+      status: 200,
+      audioBytes: 0,
+    })
+    const logs = JSON.stringify(jest.mocked(logger.warn).mock.calls)
+    expect(logs).not.toContain('PRIVATE_DOUBAO_API_ERROR_TEXT')
+    expect(logs).not.toContain('PRIVATE_UPSTREAM_DETAIL')
   })
 
   it('rejects text over the synchronous request limit', async () => {
