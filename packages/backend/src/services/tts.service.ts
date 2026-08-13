@@ -18,7 +18,10 @@ import {
   createFinalAudioCacheDescriptor,
   createSynthesisCacheKey,
 } from './synthesisCache'
-import { resolveRecommendationVoices } from './recommendationVoices'
+import {
+  enforceRecommendationVoices,
+  resolveRecommendationVoices,
+} from './recommendationVoices'
 import {
   createGenerationDiagnostics,
   GenerationDiagnostics,
@@ -138,7 +141,10 @@ async function generateWithLLM(
   const effectiveVoiceList = await resolveRecommendationVoices(engine, voiceList)
 
   const formatLlmSegments = (llmSegments: any) =>
-    normalizeRecommendationSegments(llmSegments, enableInterruptions)
+    normalizeRecommendationSegments(
+      enforceRecommendationVoices(llmSegments, effectiveVoiceList),
+      enableInterruptions
+    )
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
         ...segment,
@@ -146,7 +152,7 @@ async function generateWithLLM(
         engine,
       }))
   const formatRawLlmSegments = (llmSegments: any[]) =>
-    llmSegments
+    enforceRecommendationVoices(llmSegments, effectiveVoiceList)
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
         ...segment,

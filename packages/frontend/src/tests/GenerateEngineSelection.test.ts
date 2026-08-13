@@ -86,4 +86,21 @@ describe('Generate Engine Plugin selection', () => {
     expect(config.supportsSubtitles).toBe(true)
     expect(config.selectedVoice).toBe('zh-CN-YunxiNeural')
   })
+
+  it('falls back to the selected Engine discovery Voices when Voice List loading fails', async () => {
+    const wrapper = mount(Generate, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+
+    const config = useAudioConfigStore().audioConfig
+    api.getVoiceList.mockRejectedValueOnce(new Error('Voice List unavailable'))
+    const engineSelect = wrapper.findAllComponents(ElSelect)[0]
+
+    config.engine = 'doubao-tts'
+    engineSelect.vm.$emit('change', 'doubao-tts')
+    await flushPromises()
+
+    expect(config.engine).toBe('doubao-tts')
+    expect(config.supportsSubtitles).toBe(false)
+    expect(config.selectedVoice).toBe('zh_female_tianmeitaozi_mars_bigtts')
+  })
 })

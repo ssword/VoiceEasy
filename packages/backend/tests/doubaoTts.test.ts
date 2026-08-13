@@ -92,6 +92,19 @@ describe('Doubao TTS Engine', () => {
     )
   })
 
+  it('exposes a custom configured default Voice for discovery and LLM Recommendation', async () => {
+    const engine = new DoubaoTtsEngine(config)
+
+    await expect(engine.getVoiceOptions()).resolves.toEqual([
+      expect.objectContaining({
+        Name: 'deployment-default-voice',
+        Gender: 'All',
+        language: 'zh-CN',
+      }),
+      expect.objectContaining({ Name: 'zh_female_tianmeitaozi_mars_bigtts' }),
+    ])
+  })
+
   it('isolates synthesis cache identity by resource and model', () => {
     const first = new DoubaoTtsEngine(config)
     ttsPluginManager.replaceEngines([first])

@@ -743,24 +743,26 @@ const fetchVoices = async (engineName: string): Promise<boolean> => {
   } catch (error) {
     if (requestId !== latestVoiceListRequest) return false
     console.error('Failed to fetch voice list:', error)
-    voiceList.value = defaultVoiceList
+    const discoveredVoices = engines.value.find((engine) => engine.name === engineName)?.voices
+    if (!discoveredVoices?.length) return false
+    voiceList.value = discoveredVoices
   } finally {
     if (requestId === latestVoiceListRequest) voiceListLoading.value = false
   }
   return true
 }
 
-const syncEngineCapability = (engineName: string) => {
-  const engineInfo = engines.value.find((engine) => engine.name === engineName)
-  updateConfig('supportsSubtitles', engineInfo?.supportsSubtitles !== false)
-}
+const supportsSubtitlesForEngine = (engineName: string) =>
+  engines.value.find((engine) => engine.name === engineName)?.supportsSubtitles !== false
+
+const syncEngineCapability = (engineName: string) =>
+  updateConfig('supportsSubtitles', supportsSubtitlesForEngine(engineName))
 
 const syncEngineSelection = (engineName: string) => {
-  const engineInfo = engines.value.find((engine) => engine.name === engineName)
   const selection = getEngineSelection(
     audioConfig,
     voiceList.value,
-    engineInfo?.supportsSubtitles !== false
+    supportsSubtitlesForEngine(engineName)
   )
   updateConfig('selectedLanguage', selection.selectedLanguage)
   updateConfig('selectedGender', selection.selectedGender)

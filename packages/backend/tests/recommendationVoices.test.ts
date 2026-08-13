@@ -1,4 +1,7 @@
-import { resolveRecommendationVoices } from '../src/services/recommendationVoices'
+import {
+  enforceRecommendationVoices,
+  resolveRecommendationVoices,
+} from '../src/services/recommendationVoices'
 import { TTSEngine } from '../src/tts/types'
 
 const fallback: VoiceConfig[] = [
@@ -60,5 +63,45 @@ describe('Ticket 03 — shared recommendation Voice resolution', () => {
         VoicePersonalities: [],
       },
     ])
+  })
+})
+
+describe('LLM Recommendation Voice List boundary', () => {
+  const doubaoVoices = [
+    {
+      Name: 'configured-doubao-voice',
+      Gender: 'All',
+      ContentCategories: [],
+      VoicePersonalities: [],
+    },
+    {
+      Name: 'documented-doubao-voice',
+      Gender: 'Female',
+      ContentCategories: [],
+      VoicePersonalities: [],
+    },
+  ]
+
+  it('keeps selected Engine Voices and replaces cross-Engine recommendations', () => {
+    expect(
+      enforceRecommendationVoices(
+        [
+          { text: 'valid', name: 'documented-doubao-voice' },
+          { text: 'cross-engine', name: 'zh-CN-XiaoxiaoNeural' },
+          { text: 'missing' },
+        ],
+        doubaoVoices
+      )
+    ).toEqual([
+      { text: 'valid', name: 'documented-doubao-voice' },
+      { text: 'cross-engine', name: 'configured-doubao-voice' },
+      { text: 'missing', name: 'configured-doubao-voice' },
+    ])
+  })
+
+  it('rejects an empty selected Engine Voice List', () => {
+    expect(() => enforceRecommendationVoices([{ text: 'fixture' }], [])).toThrow(
+      'selected TTS Engine has no Voices'
+    )
   })
 })

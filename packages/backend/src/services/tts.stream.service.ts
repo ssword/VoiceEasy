@@ -26,7 +26,10 @@ import {
   createFinalAudioCacheDescriptor,
   createSynthesisCacheKey,
 } from './synthesisCache'
-import { resolveRecommendationVoices } from './recommendationVoices'
+import {
+  enforceRecommendationVoices,
+  resolveRecommendationVoices,
+} from './recommendationVoices'
 import { audioByteLength, generationRuntimeMetadata } from '../utils/diagnostics'
 import {
   assembleBuildSegmentAudio,
@@ -119,7 +122,7 @@ async function generateWithLLMStream(task: Task) {
   const { text, id } = segment
   const { length, segments } = splitText(text.trim())
   const toBuildSegments = (llmSegments: any[]) =>
-    llmSegments
+    enforceRecommendationVoices(llmSegments, voiceList)
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
         ...segment,

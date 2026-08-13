@@ -81,12 +81,7 @@ export class DoubaoTtsEngine implements TTSEngine {
           onDiagnostic: ({ status, audioBytes }) => {
             logger[status === 'completed' ? 'info' : 'warn'](
               `Doubao Streaming ${status}`,
-              {
-                engine: this.name,
-                resourceId: this.config.resourceId,
-                status,
-                audioBytes,
-              }
+              this.diagnosticMetadata(status, audioBytes)
             )
           },
         },
@@ -109,12 +104,7 @@ export class DoubaoTtsEngine implements TTSEngine {
       )
     } catch (error) {
       const status = (error as { response?: { status?: number } })?.response?.status
-      logger.warn('Doubao synthesis failed', {
-        engine: this.name,
-        resourceId: this.config.resourceId,
-        status: status ?? 'unavailable',
-        audioBytes: 0,
-      })
+      this.logSynthesisFailure(status ?? 'unavailable')
       throw new Error(
         status
           ? `Doubao TTS upstream request failed with status ${status}.`
@@ -125,20 +115,13 @@ export class DoubaoTtsEngine implements TTSEngine {
     try {
       audio = decodeAudio(response.data)
     } catch (error) {
-      logger.warn('Doubao synthesis failed', {
-        engine: this.name,
-        resourceId: this.config.resourceId,
-        status: response.status ?? 200,
-        audioBytes: 0,
-      })
+      this.logSynthesisFailure(response.status ?? 200)
       throw error
     }
-    logger.info('Doubao synthesis completed', {
-      engine: this.name,
-      resourceId: this.config.resourceId,
-      status: response.status ?? 200,
-      audioBytes: audio.length,
-    })
+    logger.info(
+      'Doubao synthesis completed',
+      this.diagnosticMetadata(response.status ?? 200, audio.length)
+    )
     return audio
   }
 
@@ -151,7 +134,32 @@ export class DoubaoTtsEngine implements TTSEngine {
   }
 
   async getVoiceOptions() {
-    return DOUBAO_VOICES
+    if (this.config.voice === DEFAULT_VOICE) return DOUBAO_VOICES
+    return [
+      {
+        Name: this.config.voice,
+        cnName: this.config.voice,
+        Gender: 'All',
+        language: 'zh-CN',
+        age: 'All',
+        ContentCategories: [],
+        VoicePersonalities: [],
+      },
+      ...DOUBAO_VOICES,
+    ]
+  }
+
+  private diagnosticMetadata(status: number | string, audioBytes: number) {
+    return {
+      engine: this.name,
+      resourceId: this.config.resourceId,
+      status,
+      audioBytes,
+    }
+  }
+
+  private logSynthesisFailure(status: number | string): void {
+    logger.warn('Doubao synthesis failed', this.diagnosticMetadata(status, 0))
   }
 
   private buildRequest(text: string, options: TtsOptions): Record<string, unknown> {
