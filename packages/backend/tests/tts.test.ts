@@ -60,7 +60,10 @@ const RATE_LIMIT_WINDOW = 10
 // Bound for local HTTP synthesis tests using deterministic fake Engine Plugins.
 const TTS_TIMEOUT = 30_000
 
-function createTestServer(edgeSupportsSubtitles = true) {
+function createTestServer(
+  edgeSupportsSubtitles = true,
+  onSynthesize: () => void = () => undefined
+) {
   class FakeEngine implements TTSEngine {
     constructor(
       readonly name: string,
@@ -68,6 +71,7 @@ function createTestServer(edgeSupportsSubtitles = true) {
     ) {}
 
     async synthesize(_text: string, options: TtsOptions): Promise<Buffer | Readable> {
+      onSynthesize()
       const audio = Buffer.from('ID3-deterministic-test-audio')
       return options.stream ? Readable.from([audio]) : audio
     }
@@ -430,8 +434,10 @@ describe('Ticket 05 — generateJson per-segment engine override', () => {
 
 describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManager', () => {
   let server: http.Server
+  const synthesize = jest.fn()
 
   beforeEach(() => {
+    synthesize.mockClear()
     jest.spyOn(audioCacheInstance, 'getAudio').mockResolvedValue(null)
     jest.spyOn(audioCacheInstance, 'setAudio').mockResolvedValue(true)
   })
@@ -439,7 +445,7 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
   afterEach(() => jest.restoreAllMocks())
 
   beforeAll((done) => {
-    server = createTestServer(false)
+    server = createTestServer(false, synthesize)
     server.listen(0, () => done())
   })
 
@@ -448,6 +454,50 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
   })
 
   describe('POST /api/v1/tts/generate (non-streaming)', () => {
+    it('rejects Timeline Control tags for preset Voice requests before TTS synthesis', async () => {
+      const { status, data } = await fetchFromServer(server, '/api/v1/tts/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: 'First speaker. [interrupt overlap=600 duck=-8]Second speaker.',
+          voice: 'en-US-AriaNeural',
+        }),
+      })
+
+      expect(status).toBe(400)
+      expect(data.success).toBe(false)
+      expect(data.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining('Interruption tags require LLM Recommendation') }),
+        ])
+      )
+      expect(synthesize).not.toHaveBeenCalled()
+    })
+
+    it('rejects Interruption tags in preset Voice JSON Segments before TTS synthesis', async () => {
+      const { status, data } = await fetchFromServer(server, '/api/v1/tts/generateJson', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: [
+            {
+              text: 'First speaker. [interrupt overlap=600 duck=-8]Second speaker.',
+              voice: 'en-US-AriaNeural',
+            },
+          ],
+        }),
+      })
+
+      expect(status).toBe(400)
+      expect(data.success).toBe(false)
+      expect(data.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining('Interruption tags require LLM Recommendation') }),
+        ])
+      )
+      expect(synthesize).not.toHaveBeenCalled()
+    })
+
     it(
       'accepts LLM Recommendation without a preset voice',
       async () => {
@@ -458,6 +508,7 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
             text: '这是一段没有预设语音、由 LLM 自动推荐语音的测试文本。',
             engine: 'qwen-audio-tts',
             useLLM: true,
+            enableTimelineControls: true,
             openaiBaseUrl: 'https://example.test/v1',
             openaiKey: 'fixture-key',
             openaiModel: 'fixture-model',

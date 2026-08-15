@@ -111,7 +111,7 @@ curl -X POST http://localhost:3000/api/v1/tts/generate \
     "text": "旁白：门缓缓打开。甲：我只是想说——乙：别说了，快跑！",
     "voice": "zh-CN-XiaoxiaoNeural",
     "useLLM": true,
-    "enableInterruptions": true
+    "enableTimelineControls": true
   }'
 ```
 
@@ -124,7 +124,7 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
     "text": "旁白：门缓缓打开。甲：我只是想说——乙：别说了，快跑！",
     "voice": "zh-CN-XiaoxiaoNeural",
     "useLLM": true,
-    "enableInterruptions": true
+    "enableTimelineControls": true
   }' \
   -o timeline-mix.mp3
 ```
@@ -142,14 +142,14 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
 [angry][interrupt overlap=500 duck=-14]别再说了！
 ```
 
-`[angry]` 会保留并交给 Qwen 控制情绪；`[interrupt ...]` 会由 EasyVoice 转换为 Timeline Mix 参数，并在发送给语音引擎前从文本中删除。简写 `[interrupt]` 默认使用 600 毫秒重叠和 -8 dB 音量衰减。Timeline Mix 只会在抢话交界处保守裁剪超过约 80 毫秒的边缘静音，普通对话之间仍保留语音引擎原有的停顿；被打断者有 100 毫秒反应时间、220 毫秒平滑降音和最长 350 毫秒尾部淡出，抢话者使用 20 毫秒淡入。手动标签本身就是明确启用信号，因此即使没有另外设置 `enableInterruptions: true`，EasyVoice 也会自动启用 Timeline Mix。
+`[angry]` 会保留并交给 Qwen 控制情绪；`[interrupt ...]` 会由 EasyVoice 转换为 Timeline Mix 参数，并在发送给语音引擎前从文本中删除。简写 `[interrupt]` 默认使用 600 毫秒重叠和 -8 dB 音量衰减。Timeline Mix 只会在抢话交界处保守裁剪超过约 80 毫秒的边缘静音，普通对话之间仍保留语音引擎原有的停顿；被打断者有 100 毫秒反应时间、220 毫秒平滑降音和最长 350 毫秒尾部淡出，抢话者使用 20 毫秒淡入。手动标签本身就是明确启用信号，因此即使没有另外设置 `enableTimelineControls: true`，EasyVoice 也会自动启用 Timeline Mix。
 
 参数说明：
 
 - `useLLM: true`：让 AI 对原文分段并推荐角色、声音和语音参数。
-- `enableInterruptions: true`：允许 AI 为原文中明确存在的打断生成重叠时间线。只开启此参数而不启用 `useLLM` 不会生效。
+- `enableTimelineControls: true`：允许 LLM Recommendation 为原文中明确存在的打断生成重叠时间线。此设置当前只控制自动 Interruption；只开启此参数而不启用 `useLLM` 不会生效。
 - `interrupt`、`overlapMs` 和 `duckPreviousDb` 由 AI 推荐流程或 EasyVoice 抢话标签生成，无需作为请求字段手动传入。其中重叠时间限制为 0–1000 毫秒，前一段的音量衰减限制为 -18–0 dB，第一段不能打断其他段落。
-- 如果原文没有明确的打断含义，音频仍按普通顺序拼接。设置 `enableInterruptions: false` 可以始终使用原有的顺序拼接行为。
+- 如果原文没有明确的打断含义，音频仍按普通顺序拼接。设置 `enableTimelineControls: false` 可以始终使用原有的顺序拼接行为。
 - `/createStream` 检测到有效抢话时会先完成 Timeline Mix，再以 MP3 返回；响应头 `x-generate-tts-type` 的值为 `buffered-timeline`，因此首个音频字节会比普通流式模式稍晚到达。
 
 ### 角色自定义

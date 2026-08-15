@@ -36,7 +36,7 @@ export interface GenerateRequest {
   openaiKey?: string
   openaiModel?: string
   engine?: string
-  enableInterruptions?: boolean
+  enableTimelineControls?: boolean
 }
 export interface TaskRequest {
   id: string

@@ -199,13 +199,13 @@
               <el-form-item label="模型">
                 <el-input v-model="audioConfig.openaiModel" clearable placeholder="gpt-4o..." />
               </el-form-item>
-              <el-form-item label="允许抢话">
+              <el-form-item label="启用时间轴控制">
                 <el-switch
-                  v-model="audioConfig.enableInterruptions"
+                  v-model="audioConfig.enableTimelineControls"
                 />
                 <span class="setting-hint">
                   长文本会先完成全部分段和混音再开始播放；
-                  手动添加 [interrupt] 标签时会自动启用
+                  自动抢话建议可用；手动添加 [interrupt] 标签时会自动启用
                 </span>
               </el-form-item>
             </el-form>

@@ -6,7 +6,14 @@ type TtsRequestBody = Pick<EdgeSchema, 'text' | 'voice'> &
   Partial<
     Pick<
       EdgeSchema,
-      'pitch' | 'volume' | 'rate' | 'useLLM' | 'engine' | 'instruction' | 'enableInterruptions'
+      | 'pitch'
+      | 'volume'
+      | 'rate'
+      | 'useLLM'
+      | 'engine'
+      | 'instruction'
+      | 'enableTimelineControls'
+      | 'enableInterruptions'
     >
   > & {
     openaiModel?: string
@@ -22,8 +29,11 @@ export function normalizeTtsRequest({
   engine,
   instruction,
   openaiModel,
-  enableInterruptions,
+  enableTimelineControls,
+  enableInterruptions: legacyEnableInterruptions,
 }: TtsRequestBody) {
+  const timelineControlsEnabled = enableTimelineControls ?? legacyEnableInterruptions ?? false
+
   return {
     text: text.trim(),
     pitch: normalizeAdjustment(pitch, 'Hz'),
@@ -31,9 +41,10 @@ export function normalizeTtsRequest({
     rate: normalizeAdjustment(rate, '%'),
     volume: normalizeAdjustment(volume, '%'),
     useLLM: useLLM ?? false,
+    enableTimelineControls: timelineControlsEnabled,
     enableInterruptions:
       useLLM === true &&
-      (enableInterruptions === true || hasInterruptionControlTag(text)),
+      (timelineControlsEnabled || hasInterruptionControlTag(text)),
     engine: engine || DEFAULT_ENGINE,
     instruction: instruction || '',
     recommendationModel: useLLM ? openaiModel || MODEL_NAME || '' : '',

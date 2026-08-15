@@ -22,8 +22,8 @@ export function buildGenerateRequest(
   }
 
   params.useLLM = true
-  params.enableInterruptions =
-    audioConfig.enableInterruptions || hasInterruptionControlTag(params.text)
+  params.enableTimelineControls =
+    audioConfig.enableTimelineControls || hasInterruptionControlTag(params.text)
   params.openaiBaseUrl = audioConfig.openaiBaseUrl
   params.openaiKey = audioConfig.openaiKey
   params.openaiModel = audioConfig.openaiModel

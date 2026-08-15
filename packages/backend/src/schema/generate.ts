@@ -4,24 +4,44 @@ import { z } from 'zod'
 import { logger } from '../utils/logger'
 import { openai } from '../utils/openai'
 import { ttsPluginManager } from '../tts/pluginManager'
+import { hasInterruptionControlTag } from '../services/recommendationInterruptions'
 
-export const edgeSchema = z.object({
-  text: z.string().trim().min(5, { message: '文本最少 5 字符！' }),
-  voice: z.string().min(1),
-  pitch: z.string().optional(),
-  volume: z.string().optional(),
-  rate: z.string().optional(),
-  useLLM: z.boolean().default(false),
-  enableInterruptions: z.boolean().default(false),
-  instruction: z.string().optional(),
-  engine: z
-    .string()
-    .optional()
-    .default(DEFAULT_ENGINE)
-    .refine((engine) => !!ttsPluginManager.getEngine(engine), {
-      message: 'Unsupported TTS engine',
-    }),
-})
+const timelineControlRequestFields = {
+  enableTimelineControls: z.boolean().optional(),
+  // Retained for API clients that have not migrated to enableTimelineControls.
+  enableInterruptions: z.boolean().optional(),
+}
+
+function rejectInterruptionTagsWithoutLlm(text: string, ctx: z.RefinementCtx) {
+  if (!hasInterruptionControlTag(text)) return
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: 'Interruption tags require LLM Recommendation',
+    path: ['text'],
+  })
+}
+
+export const edgeSchema = z
+  .object({
+    text: z.string().trim().min(5, { message: '文本最少 5 字符！' }),
+    voice: z.string().min(1),
+    pitch: z.string().optional(),
+    volume: z.string().optional(),
+    rate: z.string().optional(),
+    useLLM: z.boolean().default(false),
+    ...timelineControlRequestFields,
+    instruction: z.string().optional(),
+    engine: z
+      .string()
+      .optional()
+      .default(DEFAULT_ENGINE)
+      .refine((engine) => !!ttsPluginManager.getEngine(engine), {
+        message: 'Unsupported TTS engine',
+      }),
+  })
+  .superRefine(({ text }, ctx) => {
+    rejectInterruptionTagsWithoutLlm(text, ctx)
+  })
 
 export const llmSchema = z.object({
   text: z.string().trim().min(5, { message: '文本最少 5 字符！' }),
@@ -38,24 +58,28 @@ export const llmSchema = z.object({
     z.string().trim().min(1, { message: '请在环境变量设置或前端传入 openaiModel 模型名称！' })
   ),
   useLLM: z.boolean().default(true),
-  enableInterruptions: z.boolean().default(false),
+  ...timelineControlRequestFields,
 })
 
-const dataItemSchema = z.object({
-  text: z.string().min(1, '文本内容不能为空'),
-  voice: z.string().min(1, '语音类型不能为空'),
-  rate: z.string().default(''),
-  pitch: z.string().default(''),
-  volume: z.string().default(''),
-  instruction: z.string().optional(),
-  engine: z
-    .string()
-    .optional()
-    .default(DEFAULT_ENGINE)
-    .refine((engine) => !!ttsPluginManager.getEngine(engine), {
-      message: 'Unsupported TTS engine',
-    }),
-})
+const dataItemSchema = z
+  .object({
+    text: z.string().min(1, '文本内容不能为空'),
+    voice: z.string().min(1, '语音类型不能为空'),
+    rate: z.string().default(''),
+    pitch: z.string().default(''),
+    volume: z.string().default(''),
+    instruction: z.string().optional(),
+    engine: z
+      .string()
+      .optional()
+      .default(DEFAULT_ENGINE)
+      .refine((engine) => !!ttsPluginManager.getEngine(engine), {
+        message: 'Unsupported TTS engine',
+      }),
+  })
+  .superRefine(({ text }, ctx) => {
+    rejectInterruptionTagsWithoutLlm(text, ctx)
+  })
 
 const jsonSchema = z.object({
   data: z.array(dataItemSchema).min(1, '数据数组不能为空'),
