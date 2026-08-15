@@ -8,11 +8,11 @@
 
 - **AI 智能推荐配音**
 
-- **完全免费，无时长、无字数限制**
+- **支持本地部署，按所选语音服务的资费和额度使用**
 
-- **支持将 10 万字以上的小说一键转为有声书！**
+- **支持将长篇文本拆分为多个片段生成有声内容**
 
-- **流式传输，多长的文本都能立刻播放**
+- **流式传输，普通长文本可以边生成边播放**
 
 - **支持自定义多角色配音**
 
@@ -29,7 +29,7 @@
 - **文本转语音** 📝 ➡️ 🎵  
   一键将大段文本转为语音，高效又省时。
 - **流式传输** 🌊  
-  再多的文本，都可以迅速返回音频直接开始试听！
+  普通长文本可以分段返回音频；启用抢话混音时，会先完成时间线混音再返回 MP3。
 - **多语言支持** 🌍  
   支持中文、英文等多种语言。  
 - **字幕支持** 💬  
@@ -66,23 +66,21 @@ docker-compose up -d
 ### 2. 本地运行项目（请先确保已安装 Node.js 环境，参考：[安装 Node.js](https://zhuanlan.zhihu.com/p/442215189)）
 
 ```bash
-# 开启/安装 pnpm
+# 启用 pnpm（项目固定使用 pnpm 11）
 corepack enable
-# 或者使用 npm 安装 pnpm
-npm install -g pnpm
 
 # 克隆仓库
 git clone git@github.com:cosin2077/easyVoice.git
 cd easyVoice
 # 安装依赖
-pnpm i -r
+pnpm install
 
 # 开发模式
-pnpm dev:root
+pnpm dev
 
 # 生产模式
-pnpm build:root
-pnpm start:root
+pnpm build
+pnpm start
 ```
 
 ### 3. 生成的音频、字幕保存位置
@@ -222,14 +220,14 @@ curl -X POST http://localhost:3000/api/v1/tts/generateJson \
 
 - text: 你需要转语音的文字。
 - voice: 你需要用到的声音。EdgeTTS 声音参考：[支持的声音列表](./packages/backend/src/llm/prompt/voiceList.json)，CosyVoice 声音参考上方声音列表。
-- engine: 使用的 TTS 引擎（可选，默认 `"edge-tts"`），可选值：`"edge-tts"` / `"cosyvoice-tts"`。
+- engine: 使用的 TTS 引擎（可选，默认 `"edge-tts"`）。可选值包括 `"edge-tts"`、`"cosyvoice-tts"`、`"qwen-audio-tts"`、`"openai-tts"`、`"kokoro-tts"` 和 `"doubao-tts"`；未启用的引擎不会出现在列表中。
 - rate: 语速调整，百分比形式，默认 +0%（正常），如 "+50%"（加快 50%），"-20%"（减慢 20%）。
 - volume: 音量调整，百分比形式，默认 +0%（正常），如 "+20%"（增 20%），"-10%"（减 10%）。
 - pitch: 音调调整，默认 +0Hz（正常），如 "+10Hz"（提高 10 赫兹），"-5Hz"（降低 5 赫兹）。
 
-### CosyVoice (Qwen-Audio-TTS) 引擎
+### CosyVoice 引擎
 
-CosyVoice 是阿里云百炼的 Qwen-Audio-TTS 语音合成引擎，支持流式和非流式生成，中文效果更自然。
+CosyVoice 是阿里云百炼提供的语音合成引擎，支持流式和非流式生成，中文效果更自然。
 
 #### 1. 获取凭证
 
@@ -318,6 +316,19 @@ curl -X POST http://localhost:3000/api/v1/tts/generateJson \
 
 > **注意**：CosyVoice 目前不支持字幕（SRT）生成，`supportsSubtitles: false`。
 
+### Qwen-Audio-TTS 引擎
+
+Qwen-Audio-TTS 是阿里云百炼的另一种语音引擎，支持通过 `instruction` 传递情感、方言等控制指令。它默认关闭，需要与 CosyVoice 一样配置 DashScope 凭证：
+
+```bash
+REGISTER_QWEN_AUDIO_TTS=true
+DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxx
+DASHSCOPE_WORKSPACE_ID=ws-xxxxxxxxxxxxxxxx
+QWEN_AUDIO_TTS_MODEL=qwen-audio-3.0-tts-plus
+```
+
+请求中的引擎名称为 `qwen-audio-tts`。该引擎不提供 EasyVoice 字幕，接口会报告 `supportsSubtitles: false`。
+
 ### Doubao TTS 引擎
 
 Doubao 同时支持普通生成和单向 WebSocket 流式生成。长文本仍通过 EasyVoice 的 Build Segment 流程拆分，因此不会把超出同步接口限制的整段文本直接发给上游。
@@ -359,6 +370,7 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
 |------|---------|------|
 | OpenAI TTS | `REGISTER_OPENAI_TTS=true` | 需要配置 `OPENAI_API_KEY` |
 | Kokoro TTS | `REGISTER_KOKORO=true` | 需要配置 `TTS_KOKORO_URL` |
+| Qwen-Audio-TTS | `REGISTER_QWEN_AUDIO_TTS=true` | 需要配置 DashScope 凭证 |
 | Doubao TTS | `REGISTER_DOUBAO_TTS=true` | 需要配置 `DOUBAO_API_KEY` 和 `DOUBAO_RESOURCE_ID` |
 
 更多引擎接入方式参考 `packages/backend/src/tts/engines/` 目录下的实现。
@@ -367,7 +379,7 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
 
 - **前端**：Vue 3 + TypeScript + Element Plus 🌐  
 - **后端**：Node.js + Express + TypeScript ⚡  
-- **语音合成**：Microsoft EdgeTTS + 阿里云 CosyVoice (Qwen-Audio-TTS) + OpenAI TTS + Kokoro + ffmpeg 🎤  
+- **语音合成**：Microsoft EdgeTTS + 阿里云 CosyVoice + Qwen-Audio-TTS + OpenAI TTS + Kokoro + Doubao + ffmpeg 🎤
 - **部署**：Node.js + Docker + Docker Compose 🐳  
 
 ## 快速开发 🚀
@@ -381,7 +393,7 @@ git clone https://github.com/cosin2077/easyVoice.git
 2.安装依赖
 
 ```bash
-pnpm i -r
+pnpm install
 ```
 
 3.启动项目
@@ -392,22 +404,35 @@ pnpm dev
 
 4.打开浏览器，访问 `http://localhost:5173/`，开始体验吧！
 
+运行测试：
+
+```bash
+pnpm test
+```
+
 ## 环境变量 ⚙️
 
 | 变量名              | 默认值                         | 描述                          |
 |--------------------|-------------------------------|------------------------------|
 | `PORT`             | `3000`                        | 服务端口                      |
-| `OPENAI_BASE_URL`  | `https://api.openai.com/v1`   | OpenAI 兼容 API 地址          |
+| `OPENAI_BASE_URL`  | -                             | OpenAI 兼容 API 地址          |
 | `OPENAI_API_KEY`   | -                             | OpenAI API Key               |
 | `MODEL_NAME`       | -                             | 使用的模型名称                 |
-| `RATE_LIMIT_WINDOW`| `1`                           | 速率限制窗口大小（分钟）         |
-| `RATE_LIMIT`       | `10`                          | 速率限制次数                   |
+| `OPENAI_TIMEOUT_MS` | `120000`                    | OpenAI 兼容 API 请求超时（毫秒） |
+| `RATE_LIMIT_WINDOW`| `10`                          | 速率限制窗口大小（分钟）         |
+| `RATE_LIMIT`       | `1000000`                     | 速率限制次数；默认基本不限制      |
 | `EDGE_API_LIMIT`   | `3`                           | Edge-TTS API 并发数           |
+| `DIRECT_GEN_LIMIT` | `200`                         | `/generate` 单次文本长度上限     |
+| `LIMIT_TEXT_LENGTH` | `0`                          | 全局文本长度上限；`0` 表示不启用  |
 | `REGISTER_OPENAI_TTS` | `false`                    | 启用 OpenAI TTS 引擎          |
-| `REGISTER_COSYVOICE`  | `false`                    | 启用 CosyVoice (Qwen-Audio-TTS) 引擎 |
+| `REGISTER_KOKORO` | `false`                        | 启用 Kokoro TTS 引擎           |
+| `TTS_KOKORO_URL` | `http://localhost:8880/v1`     | Kokoro OpenAI 兼容服务地址      |
+| `REGISTER_COSYVOICE`  | `false`                    | 启用 CosyVoice 引擎               |
+| `REGISTER_QWEN_AUDIO_TTS` | `false`                | 启用 Qwen-Audio-TTS 引擎       |
 | `DASHSCOPE_API_KEY`   | -                           | 阿里云百炼 API Key            |
 | `DASHSCOPE_WORKSPACE_ID` | -                        | 阿里云百炼 Workspace ID       |
 | `COSYVOICE_MODEL`  | `cosyvoice-v3-flash`         | CosyVoice 模型名称            |
+| `QWEN_AUDIO_TTS_MODEL` | `qwen-audio-3.0-tts-plus` | Qwen-Audio-TTS 模型名称       |
 | `REGISTER_DOUBAO_TTS` | `false` | 启用 Doubao 普通及流式 TTS 引擎 |
 | `DOUBAO_API_KEY` | - | Doubao API Key（仅服务端使用） |
 | `DOUBAO_RESOURCE_ID` | - | Doubao 音频资源 ID |
@@ -426,10 +451,10 @@ pnpm dev
 - A: AI 推荐配音是通过大模型来决定不同的段落的配音参数，大模型的能力直接影响配音结果，你可以尝试更换不同的大模型，或者是用 Edge-TTS 选择固定的声音配音。
 
 - **Q: 速度太慢？**
-- A: AI 推荐配音需要把输入的文本分段、然后让 AI 分析、推荐每一分段的配音参数，最后再生成音频、拼接。速度会比直接用 Edge-TTS慢。你可以更换相应更快的大模型，或者尝试调节 Edge-TTS 的并发参数：EDGE_API_LIMIT为更大的值(10 以下)，注意并发太高可能会有限制。
+- A: AI 推荐配音需要把输入的文本分段、让 AI 分析并推荐每一段的配音参数，最后再生成音频和拼接，因此会比直接使用 Edge-TTS 慢。可以更换更快的模型，或适当调高 `EDGE_API_LIMIT`；并发过高可能触发上游限制。
 
 ## Tips
 
-- 当前通过 EdgeTTS API 和 CosyVoice 等多引擎提供免费/付费语音合成。
+- 当前通过 EdgeTTS、CosyVoice、Qwen-Audio-TTS、OpenAI、Kokoro 和 Doubao 等引擎提供语音合成，实际费用取决于所选服务。
 
 - 通过 TtsPluginManager 插件系统接入更多引擎，未来计划支持 Google TTS、声音克隆等功能。
