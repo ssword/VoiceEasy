@@ -52,4 +52,13 @@ describe('Issue #3 — interruption request toggle', () => {
       )
     ).toEqual(expect.objectContaining({ enableInterruptions: true }))
   })
+
+  it('enables interruptions when long text contains a manual control tag', () => {
+    expect(
+      buildGenerateRequest(
+        config({ voiceMode: 'ai', enableInterruptions: false }),
+        `医生：您哪里不舒服？患者：[interrupt overlap=1000 duck=-12]就是心口这一块。${'后续内容'.repeat(50)}`
+      )
+    ).toEqual(expect.objectContaining({ enableInterruptions: true }))
+  })
 })

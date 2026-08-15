@@ -31,7 +31,11 @@ import {
   assembleBuildSegmentSubtitles,
   TimelineBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
-import { normalizeRecommendationSegments } from './recommendationInterruptions'
+import {
+  normalizeRecommendationSegments,
+  prepareInterruptionSourceText,
+} from './recommendationInterruptions'
+import { logAudioGenerationJson } from '../utils/audioGenerationLog'
 
 // 错误消息枚举
 export enum ErrorMessages {
@@ -136,14 +140,16 @@ async function generateWithLLM(
   task?: Task
 ): Promise<TTSResult> {
   const { text, id } = segment
-  const { length, segments } = splitText(text.trim())
+  const interruptionSource = prepareInterruptionSourceText(text.trim())
+  const { length, segments } = splitText(interruptionSource.text)
 
   const effectiveVoiceList = await resolveRecommendationVoices(engine, voiceList)
 
-  const formatLlmSegments = (llmSegments: any) =>
+  const formatLlmSegments = (llmSegments: any, includeSourceDirectives = false) =>
     normalizeRecommendationSegments(
       enforceRecommendationVoices(llmSegments, effectiveVoiceList),
-      enableInterruptions
+      enableInterruptions,
+      includeSourceDirectives ? interruptionSource : undefined
     )
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
@@ -170,8 +176,9 @@ async function generateWithLLM(
         'LLM response is not an array, please switch to Edge TTS mode or use another model'
       )
     }
-    const formattedSegments = formatLlmSegments(llmSegments)
+    const formattedSegments = formatLlmSegments(llmSegments, true)
     diagnostics.segmentCount = formattedSegments.length
+    logAudioGenerationJson(formattedSegments)
     logger.info('LLM Recommendation segmented content', {
       engine,
       segmentCount: formattedSegments.length,
@@ -218,6 +225,7 @@ async function generateWithLLM(
       if (enableInterruptions) {
         globalBuildSegments.push(...formattedSegments)
       } else {
+        logAudioGenerationJson(formattedSegments)
         const result = await buildSegmentList(
           { ...segment, id: `[segments:${count}]${segment.id}` },
           formattedSegments,
@@ -231,9 +239,15 @@ async function generateWithLLM(
       }
     }
     if (enableInterruptions) {
+      const normalizedSegments = normalizeRecommendationSegments(
+        globalBuildSegments,
+        true,
+        interruptionSource
+      ) as unknown as BuildSegment[]
+      logAudioGenerationJson(normalizedSegments)
       return buildSegmentList(
         segment,
-        normalizeRecommendationSegments(globalBuildSegments, true) as unknown as BuildSegment[],
+        normalizedSegments,
         diagnostics,
         task,
         true,
@@ -440,6 +454,8 @@ async function buildSegmentList(
     strategy: hasEffectiveInterruption ? 'timeline-mix' : 'concat',
   })
   let segmentStartsMs: number[] | undefined
+  let segmentTrimStartsMs: number[] | undefined
+  let segmentDurationsMs: number[] | undefined
   // Skip subtitle concatenation if engine doesn't support subtitles (e.g. CosyVoice, Qwen-Audio-TTS)
   const supportsSubtitles = results.every((result, index) => {
     if (!result.success) return true
@@ -459,6 +475,8 @@ async function buildSegmentList(
         outputFile,
       })
       segmentStartsMs = timelineResult.segmentStartsMs
+      segmentTrimStartsMs = timelineResult.segmentTrimStartsMs
+      segmentDurationsMs = timelineResult.segmentDurationsMs
       diagnostics.mixDurationMs = timelineResult.mixDurationMs
     } else {
       diagnostics.generationMode = 'concat'
@@ -475,6 +493,8 @@ async function buildSegmentList(
         audioFiles: fileList,
         outputFile,
         segmentStartsMs,
+        segmentTrimStartsMs,
+        segmentDurationsMs,
       })
       logger.debug('Concatenating Segment subtitles', { segmentCount: fileList.length })
     }

@@ -4,7 +4,7 @@ import { ttsPluginManager } from '../tts/pluginManager'
 import { clampFiniteNumber } from '../utils/safeNumber'
 
 export const FINAL_AUDIO_CACHE_VERSION = 2
-export const TIMELINE_MIX_ALGORITHM_VERSION = 'timeline-mix-v1'
+export const TIMELINE_MIX_ALGORITHM_VERSION = 'timeline-mix-v3-natural-boundaries'
 
 export interface SynthesisCacheIdentity {
   engine: string

@@ -63,6 +63,8 @@ describe('Issue #3 — interruption-aware LLM Recommendation prompt', () => {
     )
 
     expect(prompt).toContain('interrupt')
+    expect(prompt).toContain('[interrupt overlap=600 duck=-8]')
+    expect(prompt).toContain('500-700ms')
     expect(prompt).toContain('overlapMs')
     expect(prompt).toContain('duckPreviousDb')
     expect(prompt).toMatch(/unfinished speech/i)
@@ -75,5 +77,20 @@ describe('Issue #3 — interruption-aware LLM Recommendation prompt', () => {
 
     expect(prompt).not.toContain('overlapMs')
     expect(prompt).not.toContain('duckPreviousDb')
+    expect(prompt).not.toContain('[interrupt')
+  })
+
+  it('documents the EasyVoice interruption tag beside Qwen rich-language tags', () => {
+    const prompt = getPrompt(
+      'cn',
+      voices,
+      '甲说：“我只是想说——”乙抢话：“别说了！”',
+      'qwen-audio-tts',
+      true
+    )
+
+    expect(prompt).toContain('### 富语言标签')
+    expect(prompt).toContain('[interrupt overlap=600 duck=-8]')
+    expect(prompt).toContain('发送给语音引擎前移除')
   })
 })

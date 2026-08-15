@@ -1,4 +1,5 @@
 import type { EdgeSchema } from '../schema/generate'
+import { hasInterruptionControlTag } from './recommendationInterruptions'
 import { DEFAULT_ENGINE, MODEL_NAME } from '../config'
 
 type TtsRequestBody = Pick<EdgeSchema, 'text' | 'voice'> &
@@ -30,7 +31,9 @@ export function normalizeTtsRequest({
     rate: normalizeAdjustment(rate, '%'),
     volume: normalizeAdjustment(volume, '%'),
     useLLM: useLLM ?? false,
-    enableInterruptions: useLLM === true && enableInterruptions === true,
+    enableInterruptions:
+      useLLM === true &&
+      (enableInterruptions === true || hasInterruptionControlTag(text)),
     engine: engine || DEFAULT_ENGINE,
     instruction: instruction || '',
     recommendationModel: useLLM ? openaiModel || MODEL_NAME || '' : '',

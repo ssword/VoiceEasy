@@ -73,15 +73,31 @@ export function mergeSubtitleFiles(subtitleFiles: SubtitleFiles, gap: number = 0
 /** Places each Segment's local subtitle cues at its actual Timeline Mix start. */
 export function placeSubtitleFilesOnTimeline(
   subtitleFiles: SubtitleFiles,
-  segmentStartsMs: number[]
+  segmentStartsMs: number[],
+  segmentTrimStartsMs: number[] = segmentStartsMs.map(() => 0),
+  segmentDurationsMs?: number[]
 ): SubtitleItem[] {
-  if (!Array.isArray(subtitleFiles) || subtitleFiles.length !== segmentStartsMs.length) {
+  if (
+    !Array.isArray(subtitleFiles) ||
+    subtitleFiles.length !== segmentStartsMs.length ||
+    subtitleFiles.length !== segmentTrimStartsMs.length ||
+    (segmentDurationsMs !== undefined && subtitleFiles.length !== segmentDurationsMs.length)
+  ) {
     throw new SubtitleMergeError('Timeline starts must match subtitle files')
   }
 
   return subtitleFiles.flatMap((file, fileIndex) => {
     const startMs = segmentStartsMs[fileIndex]
-    if (!Array.isArray(file) || !Number.isFinite(startMs) || startMs < 0) {
+    const trimStartMs = segmentTrimStartsMs[fileIndex]
+    const durationMs = segmentDurationsMs?.[fileIndex]
+    if (
+      !Array.isArray(file) ||
+      !Number.isFinite(startMs) ||
+      startMs < 0 ||
+      !Number.isFinite(trimStartMs) ||
+      trimStartMs < 0 ||
+      (durationMs !== undefined && (!Number.isFinite(durationMs) || durationMs <= 0))
+    ) {
       throw new SubtitleMergeError(`Invalid Timeline subtitle data at index ${fileIndex}`)
     }
     return file.map((item, itemIndex) => {
@@ -90,10 +106,17 @@ export function placeSubtitleFilesOnTimeline(
           `Invalid subtitle item at file ${fileIndex}, item ${itemIndex}`
         )
       }
+      const localStart = Math.max(0, item.start - trimStartMs)
+      const localEnd = Math.max(
+        localStart,
+        durationMs === undefined
+          ? item.end - trimStartMs
+          : Math.min(durationMs, item.end - trimStartMs)
+      )
       return {
         part: item.part,
-        start: item.start + startMs,
-        end: item.end + startMs,
+        start: localStart + startMs,
+        end: localEnd + startMs,
       }
     })
   })

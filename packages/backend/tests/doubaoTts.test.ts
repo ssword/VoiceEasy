@@ -75,8 +75,8 @@ describe('Doubao TTS Engine', () => {
     )
     await expect(engine.getVoiceOptions()).resolves.toContainEqual(
       expect.objectContaining({
-        Name: 'zh_female_tianmeitaozi_mars_bigtts',
-        cnName: '甜美桃子',
+        Name: 'zh_female_vv_uranus_bigtts',
+        cnName: 'Vivi 2.0',
         Gender: 'Female',
         language: 'zh-CN',
       })
@@ -95,14 +95,16 @@ describe('Doubao TTS Engine', () => {
   it('exposes a custom configured default Voice for discovery and LLM Recommendation', async () => {
     const engine = new DoubaoTtsEngine(config)
 
-    await expect(engine.getVoiceOptions()).resolves.toEqual([
-      expect.objectContaining({
-        Name: 'deployment-default-voice',
-        Gender: 'All',
-        language: 'zh-CN',
-      }),
-      expect.objectContaining({ Name: 'zh_female_tianmeitaozi_mars_bigtts' }),
-    ])
+    await expect(engine.getVoiceOptions()).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Name: 'deployment-default-voice',
+          Gender: 'All',
+          language: 'zh-CN',
+        }),
+        expect.objectContaining({ Name: 'zh_female_vv_uranus_bigtts' }),
+      ])
+    )
   })
 
   it('isolates synthesis cache identity by resource and model', () => {

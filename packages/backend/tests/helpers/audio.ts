@@ -63,6 +63,39 @@ export async function createStereoToneMp3(
   ])
 }
 
+export async function createStereoToneWithLeadingSilenceMp3(
+  file: string,
+  frequency: number,
+  toneDurationSeconds: number,
+  leadingSilenceSeconds: number,
+  channel: 'left' | 'right',
+  trailingSilenceSeconds: number = 0
+): Promise<void> {
+  const pan = channel === 'left' ? 'pan=stereo|c0=c0|c1=0*c0' : 'pan=stereo|c0=0*c0|c1=c0'
+  await runMediaCommand('ffmpeg', [
+    '-v',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    `anullsrc=r=44100:cl=mono:d=${leadingSilenceSeconds}`,
+    '-f',
+    'lavfi',
+    '-i',
+    `sine=frequency=${frequency}:duration=${toneDurationSeconds}:sample_rate=44100`,
+    '-filter_complex',
+    trailingSilenceSeconds > 0
+      ? `[0:a][1:a]concat=n=2:v=0:a=1,apad=pad_dur=${trailingSilenceSeconds},${pan}`
+      : `[0:a][1:a]concat=n=2:v=0:a=1,${pan}`,
+    '-codec:a',
+    'libmp3lame',
+    '-q:a',
+    '2',
+    '-y',
+    file,
+  ])
+}
+
 export async function probeStereoRms(
   file: string,
   startSeconds: number,
@@ -71,12 +104,12 @@ export async function probeStereoRms(
   const pcm = await runMediaCommand('ffmpeg', [
     '-v',
     'error',
+    '-i',
+    file,
     '-ss',
     String(startSeconds),
     '-t',
     String(durationSeconds),
-    '-i',
-    file,
     '-f',
     'f32le',
     '-acodec',

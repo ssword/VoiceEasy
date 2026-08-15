@@ -183,7 +183,6 @@ describe('Doubao TTS Engine Streaming', () => {
     expect(decodeFullRequest(socket.sent[0])).toEqual({
       req_params: {
         text: 'Progressive Doubao fixture',
-        model: 'seed-tts-2.0-standard',
         speaker: 'requested-voice',
         audio_params: {
           format: 'mp3',
@@ -231,6 +230,8 @@ describe('Doubao TTS Engine Streaming', () => {
     expect(logger.info).toHaveBeenCalledWith('Doubao Streaming completed', {
       engine: 'doubao-tts',
       resourceId: 'seed-tts-2.0',
+      speaker: 'deployment-default-voice',
+      model: 'seed-tts-2.0-standard',
       status: 'completed',
       audioBytes: Buffer.byteLength('ID3-stream'),
     })

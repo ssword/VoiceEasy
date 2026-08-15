@@ -109,7 +109,10 @@ export async function generateAudio(req: Request, res: Response, next: NextFunct
   try {
     const formattedBody = normalizeTtsRequest(req.body)
     const diagnostics = ttsRequestMetadata(req.body, res)
-    logger.info('Direct TTS request accepted', diagnostics)
+    logger.info('Direct TTS request accepted', {
+      ...diagnostics,
+      interruptionsEnabled: formattedBody.enableInterruptions,
+    })
     let result = await generateTTS(formattedBody, undefined, generationDiagnostics)
     const responseResult = {
       success: true,

@@ -1,8 +1,17 @@
 import axios from 'axios'
 
-const DEV_URL = 'http://localhost:3000/api/v1/tts'
-const PROD_URL = import.meta.env.VITE_API_URL || '/api/v1/tts'
-const baseURL = import.meta.env.MODE === 'development' ? DEV_URL : PROD_URL
+// Keep requests on the frontend origin so the Vite proxy can follow the
+// backend's configured port (including a PORT value from the repository .env).
+// Older deployments used VITE_API_URL=/api; normalize that value to the route
+// actually exposed by the backend.
+export function resolveTtsApiBaseUrl(value?: string): string {
+  const configured = value?.trim().replace(/\/+$/, '')
+  if (!configured || configured === '/api') return '/api/v1/tts'
+  if (configured.endsWith('/api')) return `${configured}/v1/tts`
+  return configured
+}
+
+const baseURL = resolveTtsApiBaseUrl(import.meta.env.VITE_API_URL)
 
 const api = axios.create({
   baseURL: baseURL,

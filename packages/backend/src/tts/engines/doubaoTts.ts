@@ -26,19 +26,31 @@ type DoubaoResponse = {
 }
 
 const ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/create'
-const DEFAULT_VOICE = 'zh_female_tianmeitaozi_mars_bigtts'
+const DEFAULT_VOICE = 'zh_female_vv_uranus_bigtts'
 const MAX_TEXT_LENGTH = 3000
 
 const DOUBAO_VOICES = [
   {
     Name: DEFAULT_VOICE,
-    cnName: '甜美桃子',
+    cnName: 'Vivi 2.0',
     Gender: 'Female',
     language: 'zh-CN',
     age: 'Young',
     ContentCategories: [],
     VoicePersonalities: [],
   },
+  { Name: 'zh_female_xiaohe_uranus_bigtts', cnName: '小何 2.0', Gender: 'Female', language: 'zh-CN', age: 'Young', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_male_m191_uranus_bigtts', cnName: '云舟 2.0', Gender: 'Male', language: 'zh-CN', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_male_taocheng_uranus_bigtts', cnName: '小天 2.0', Gender: 'Male', language: 'zh-CN', age: 'Young', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_male_liufei_uranus_bigtts', cnName: '刘飞 2.0', Gender: 'Male', language: 'zh-CN', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_female_sophie_uranus_bigtts', cnName: '魅力苏菲 2.0', Gender: 'Female', language: 'zh-CN', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_female_sajiaoxuemei_uranus_bigtts', cnName: '撒娇学妹 2.0', Gender: 'Female', language: 'zh-CN', age: 'Young', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_female_peiqi_uranus_bigtts', cnName: '佩奇猪 2.0', Gender: 'Female', language: 'zh-CN', age: 'Young', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_female_yingyujiaoxue_uranus_bigtts', cnName: 'Tina 老师 2.0', Gender: 'Female', language: 'zh-CN', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_female_kefunvsheng_uranus_bigtts', cnName: '暖阳女声 2.0', Gender: 'Female', language: 'zh-CN', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'zh_female_xiaoxue_uranus_bigtts', cnName: '儿童绘本 2.0', Gender: 'Female', language: 'zh-CN', age: 'Young', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'en_male_tim_uranus_bigtts', cnName: 'Tim', Gender: 'Male', language: 'en-US', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
+  { Name: 'en_female_dacey_uranus_bigtts', cnName: 'Dacey', Gender: 'Female', language: 'en-US', age: 'Adult', ContentCategories: [], VoicePersonalities: [] },
 ]
 
 export class DoubaoTtsEngine implements TTSEngine {
@@ -77,11 +89,17 @@ export class DoubaoTtsEngine implements TTSEngine {
         {
           apiKey: this.config.apiKey,
           resourceId: this.config.resourceId,
+          speaker: options.voice || this.config.voice,
+          model: this.config.model,
           payload: this.buildStreamingRequest(text, options),
-          onDiagnostic: ({ status, audioBytes }) => {
+          onDiagnostic: ({ status, audioBytes, error }) => {
             logger[status === 'completed' ? 'info' : 'warn'](
               `Doubao Streaming ${status}`,
-              this.diagnosticMetadata(status, audioBytes)
+              this.diagnosticMetadata(status, audioBytes, {
+                speaker: options.voice || this.config.voice,
+                model: this.config.model,
+                error,
+              })
             )
           },
         },
@@ -149,12 +167,17 @@ export class DoubaoTtsEngine implements TTSEngine {
     ]
   }
 
-  private diagnosticMetadata(status: number | string, audioBytes: number) {
+  private diagnosticMetadata(
+    status: number | string,
+    audioBytes: number,
+    extra: Record<string, unknown> = {}
+  ) {
     return {
       engine: this.name,
       resourceId: this.config.resourceId,
       status,
       audioBytes,
+      ...extra,
     }
   }
 
@@ -164,7 +187,7 @@ export class DoubaoTtsEngine implements TTSEngine {
 
   private buildRequest(text: string, options: TtsOptions): Record<string, unknown> {
     const controls = normalizedControls(options)
-    return {
+    const reqParams: Record<string, unknown> = {
       model: this.config.model,
       text_prompt: text,
       speaker: options.voice || this.config.voice,
@@ -176,24 +199,32 @@ export class DoubaoTtsEngine implements TTSEngine {
         pitch_rate: controls.pitch,
       },
     }
+    if (!this.shouldSendModel()) delete reqParams.model
+    return reqParams
   }
 
   private buildStreamingRequest(text: string, options: TtsOptions): Record<string, unknown> {
     const controls = normalizedControls(options)
-    return {
-      req_params: {
-        text,
-        model: this.config.model,
-        speaker: options.voice || this.config.voice,
-        audio_params: {
-          format: 'mp3',
-          sample_rate: this.sampleRate,
-          speech_rate: controls.speechRate,
-          loudness_rate: controls.loudnessRate,
-        },
-        additions: JSON.stringify({ post_process: { pitch: controls.pitch } }),
+    const reqParams: Record<string, unknown> = {
+      text,
+      model: this.config.model,
+      speaker: options.voice || this.config.voice,
+      audio_params: {
+        format: 'mp3',
+        sample_rate: this.sampleRate,
+        speech_rate: controls.speechRate,
+        loudness_rate: controls.loudnessRate,
       },
+      additions: JSON.stringify({ post_process: { pitch: controls.pitch } }),
     }
+    if (!this.shouldSendModel()) delete reqParams.model
+    return { req_params: reqParams }
+  }
+
+  private shouldSendModel(): boolean {
+    // The API documents model as a cloned-voice override. Sending the default
+    // model for the standard resource can produce a provider-side 55000000.
+    return this.config.resourceId !== 'seed-tts-2.0' || this.config.model !== 'seed-tts-2.0-standard'
   }
 }
 

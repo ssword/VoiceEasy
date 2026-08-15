@@ -202,11 +202,10 @@
               <el-form-item label="允许抢话">
                 <el-switch
                   v-model="audioConfig.enableInterruptions"
-                  :disabled="audioConfig.inputText.length >= 200"
                 />
                 <span class="setting-hint">
-                  仅支持少于 200 字的短文本，
-                  且只在原文明确出现打断或急切反驳时生效
+                  长文本会先完成全部分段和混音再开始播放；
+                  手动添加 [interrupt] 标签时会自动启用
                 </span>
               </el-form-item>
             </el-form>

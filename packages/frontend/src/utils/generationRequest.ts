@@ -1,6 +1,9 @@
 import type { AudioConfig } from '@/stores/audioConfig'
 import type { GenerateRequest } from '@/api/tts'
 
+const hasInterruptionControlTag = (text: string) =>
+  /\[interrupt(?:\s+[^\]\r\n]*)?\]/i.test(text)
+
 export function buildGenerateRequest(
   audioConfig: AudioConfig,
   text: string
@@ -19,7 +22,8 @@ export function buildGenerateRequest(
   }
 
   params.useLLM = true
-  params.enableInterruptions = audioConfig.enableInterruptions
+  params.enableInterruptions =
+    audioConfig.enableInterruptions || hasInterruptionControlTag(params.text)
   params.openaiBaseUrl = audioConfig.openaiBaseUrl
   params.openaiKey = audioConfig.openaiKey
   params.openaiModel = audioConfig.openaiModel

@@ -44,6 +44,7 @@ export async function createTaskStream(req: Request, res: Response, next: NextFu
     res.once?.('close', cancelOnDisconnect)
     logger.info('TTS stream request accepted', {
       ...ttsRequestMetadata(req.body, res, task.id),
+      interruptionsEnabled: formattedBody.enableInterruptions,
       taskId: task.id,
     })
     try {

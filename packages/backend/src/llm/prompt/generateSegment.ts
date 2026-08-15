@@ -154,7 +154,11 @@ export function getPrompt(
           'shows unfinished speech, an interruption, an urgent rebuttal, or an argument.',
           'Otherwise set it to false. For an interruption, return numeric "overlapMs"',
           '(0-1000) and "duckPreviousDb" (-18-0). The first Segment cannot interrupt.',
-          'You must not add, delete, duplicate, rewrite, or reorder any original text.',
+          'Prefer 500-700ms overlap and about -8dB ducking unless the source is unusually forceful.',
+          'Also prefix that Segment text with the EasyVoice control tag',
+          '`[interrupt overlap=600 duck=-8]`, using the same numeric values.',
+          'EasyVoice removes this tag before sending text to the speech engine.',
+          'Apart from this control tag, you must not add, delete, duplicate, rewrite, or reorder text.',
           '',
         ].join('\n')
       : [
@@ -164,7 +168,11 @@ export function getPrompt(
           '才可在当前 Segment 设置 "interrupt": true；否则必须为 false。',
           '抢话时返回数值 "overlapMs"（0-1000）',
           '和 "duckPreviousDb"（-18-0）。第一条 Segment 不能抢话。',
-          '不得新增、删除、重复、改写或重排任何原文。',
+          '除非原文表现得特别激烈，否则优先使用 500-700ms 重叠和约 -8dB 降音。',
+          '同时在该 Segment 的 text 开头添加 EasyVoice 控制标签',
+          '`[interrupt overlap=600 duck=-8]`，标签数值应与字段一致。',
+          'EasyVoice 会在发送给语音引擎前移除该标签。',
+          '除这个控制标签外，不得新增、删除、重复、改写或重排任何原文。',
           '',
         ].join('\n')
     : ''

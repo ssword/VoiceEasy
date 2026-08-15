@@ -37,7 +37,11 @@ import {
   GeneratedStreamBuildSegmentAudio,
   TimelineBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
-import { normalizeRecommendationSegments } from './recommendationInterruptions'
+import {
+  normalizeRecommendationSegments,
+  prepareInterruptionSourceText,
+} from './recommendationInterruptions'
+import { logAudioGenerationJson } from '../utils/audioGenerationLog'
 
 // 错误消息枚举
 enum ErrorMessages {
@@ -120,7 +124,8 @@ async function generateWithLLMStream(task: Task) {
   const { segment, voiceList, lang, engine } = task.context as Required<NonNullable<Task['context']>>
   const enableInterruptions = task.fields.enableInterruptions === true
   const { text, id } = segment
-  const { length, segments } = splitText(text.trim())
+  const interruptionSource = prepareInterruptionSourceText(text.trim())
+  const { length, segments } = splitText(interruptionSource.text)
   const toBuildSegments = (llmSegments: any[]) =>
     enforceRecommendationVoices(llmSegments, voiceList)
       .filter((segment: any) => segment.text)
@@ -141,15 +146,17 @@ async function generateWithLLMStream(task: Task) {
     return toBuildSegments(llmSegments)
   }
   const recommendNormalizedBuildSegments = async (
-    textSegment: string
+    textSegment: string,
+    includeSourceDirectives = false
   ): Promise<BuildSegment[]> =>
     normalizeRecommendationSegments(
       await recommendBuildSegments(textSegment),
-      enableInterruptions
+      enableInterruptions,
+      includeSourceDirectives ? interruptionSource : undefined
     ) as unknown as BuildSegment[]
 
   if (length <= 1) {
-    const formattedSegments = await recommendNormalizedBuildSegments(segments[0])
+    const formattedSegments = await recommendNormalizedBuildSegments(segments[0], true)
     if (task.context?.diagnostics) {
       task.context.diagnostics.segmentCount = formattedSegments.length
     }
@@ -183,7 +190,11 @@ async function generateWithLLMStream(task: Task) {
         logger.info(`Progress: ${getProgress()}%`)
       }
       await assembleRecommendedSegments(
-        normalizeRecommendationSegments(recommendedSegments, true) as unknown as BuildSegment[],
+        normalizeRecommendationSegments(
+          recommendedSegments,
+          true,
+          interruptionSource
+        ) as unknown as BuildSegment[],
         task
       )
       return
@@ -193,6 +204,7 @@ async function generateWithLLMStream(task: Task) {
       for (const textSegment of segments) {
         count++
         const llmFormatted = await recommendNormalizedBuildSegments(textSegment)
+        logAudioGenerationJson(llmFormatted)
         if (task.context?.diagnostics) {
           task.context.diagnostics.segmentCount += llmFormatted.length
         }
@@ -226,6 +238,7 @@ async function generateWithLLMStream(task: Task) {
 }
 
 async function assembleRecommendedSegments(segments: BuildSegment[], task: Task): Promise<void> {
+  logAudioGenerationJson(segments)
   const finalCache = createFinalAudioCacheDescriptor({
     enableInterruptions: true,
     segments,
@@ -307,12 +320,7 @@ async function bufferTimelineBuildSegments(
         if (supportsSubtitles) subtitleJsonFiles.push(`${cachedAudioFile}.json`)
         continue
       }
-      const audioStream = (await generateSingleVoiceStream({
-        ...buildSegment,
-        output: audioFile,
-        outputType: 'stream',
-      })) as Readable
-      await pipeline(audioStream, createWriteStream(audioFile), { signal })
+      await synthesizeStreamToFileWithRetry(buildSegment, audioFile, signal, task, index)
       await ensureDir(segmentCacheDir)
       const stableAudioFile = path.join(segmentCacheDir, `${segmentCacheKey}.mp3`)
       const stableTemporaryFile = `${stableAudioFile}.${task.id}.${index}.tmp`
@@ -354,6 +362,8 @@ async function bufferTimelineBuildSegments(
         outputFile,
         jsonFiles: subtitleJsonFiles,
         segmentStartsMs: timelineResult.segmentStartsMs,
+        segmentTrimStartsMs: timelineResult.segmentTrimStartsMs,
+        segmentDurationsMs: timelineResult.segmentDurationsMs,
       })
     }
     await audioCacheInstance.setAudio(finalCache.key, {
@@ -378,6 +388,52 @@ async function bufferTimelineBuildSegments(
     ])
     throw error
   }
+}
+
+const MAX_STREAM_SYNTHESIS_ATTEMPTS = 3
+
+async function synthesizeStreamToFileWithRetry(
+  buildSegment: BuildSegment,
+  audioFile: string,
+  signal: AbortSignal | undefined,
+  task: Task,
+  segmentIndex: number
+): Promise<void> {
+  for (let attempt = 1; attempt <= MAX_STREAM_SYNTHESIS_ATTEMPTS; attempt++) {
+    signal?.throwIfAborted()
+    await fs.unlink(audioFile).catch(() => undefined)
+    try {
+      const audioStream = (await generateSingleVoiceStream({
+        ...buildSegment,
+        output: audioFile,
+        outputType: 'stream',
+      })) as Readable
+      await pipeline(audioStream, createWriteStream(audioFile), { signal })
+      return
+    } catch (error) {
+      if (attempt === MAX_STREAM_SYNTHESIS_ATTEMPTS || signal?.aborted) {
+        throw Object.assign(error as Error, { segmentIndex, attempt })
+      }
+      if (isPermanentDoubaoConfigurationError(error, buildSegment.engine)) {
+        throw Object.assign(error as Error, { segmentIndex, attempt })
+      }
+      if (task.context?.diagnostics) task.context.diagnostics.retryCount++
+      logger.warn('Segment streaming synthesis attempt failed', {
+        engine: buildSegment.engine,
+        segmentIndex,
+        attempt,
+        maxAttempts: MAX_STREAM_SYNTHESIS_ATTEMPTS,
+      })
+      await asyncSleep(1000)
+    }
+  }
+}
+
+function isPermanentDoubaoConfigurationError(error: unknown, engine?: string): boolean {
+  if (engine !== 'doubao-tts' || !(error instanceof Error)) return false
+  return /resource ID is mismatched|speaker related resource|invalidmodel|invalid speaker/i.test(
+    error.message
+  )
 }
 
 async function findStreamSubtitleJsonFile(audioFile: string): Promise<string> {

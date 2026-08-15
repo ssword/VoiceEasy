@@ -55,10 +55,23 @@ jest.mock('../src/utils/openai', () => ({
     config: jest.fn(),
     createChatCompletion: jest.fn(async (request: any) => {
       const prompt = String(request.messages?.at(-1)?.content || '')
+      const sourceTagMarker = prompt.match(/SOURCE_TAG_REPRO_(?:generate|createStream)/)?.[0]
+      const isSourceTagRepro = sourceTagMarker !== undefined
       mockPipelineEvents.push(
         `recommend:${prompt.includes('SECOND_BATCH') ? 'second' : 'first'}`
       )
-      const segments = prompt.includes('CANCEL_MIX')
+      const segments = isSourceTagRepro
+        ? [
+            {
+              text: `${sourceTagMarker} 医生：最近是哪里不舒服？`,
+              name: 'en-US-AriaNeural',
+            },
+            {
+              text: '患者：就是心口这一块，吃完饭没多久就顶得慌，跟塞了个东西在里头一样。',
+              name: 'en-US-AriaNeural',
+            },
+          ]
+        : prompt.includes('CANCEL_MIX')
         ? [
             { text: 'Mix cancellation first Segment.', name: 'en-US-AriaNeural' },
             {
@@ -127,7 +140,7 @@ jest.mock('../src/utils/openai', () => ({
               content: JSON.stringify({
                 segments: segments.map((segment) => ({
                   ...segment,
-                  text: `${segment.text} ${mockRunId}`,
+                  text: isSourceTagRepro ? segment.text : `${segment.text} ${mockRunId}`,
                 })),
               }),
             },
@@ -336,7 +349,7 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     const duration = await probeAudioDuration(probeFile)
     expect(duration).toBeGreaterThan(fixtureDuration * 2 - 0.5)
     expect(duration).toBeLessThan(fixtureDuration * 2 - 0.3)
-    const overlap = await probeStereoRms(probeFile, fixtureDuration - 0.3, 0.15)
+    const overlap = await probeStereoRms(probeFile, fixtureDuration - 0.14, 0.04)
     expect(overlap.left).toBeGreaterThan(0.005)
     expect(overlap.right).toBeGreaterThan(0.02)
     expect(overlap.left).toBeLessThan(overlap.right * 0.5)
@@ -405,7 +418,7 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     const duration = await probeAudioDuration(probeFile)
     expect(duration).toBeGreaterThan(fixtureDuration * 2 - 0.5)
     expect(duration).toBeLessThan(fixtureDuration * 2 - 0.3)
-    const overlap = await probeStereoRms(probeFile, fixtureDuration - 0.3, 0.15)
+    const overlap = await probeStereoRms(probeFile, fixtureDuration - 0.14, 0.04)
     expect(overlap.left).toBeGreaterThan(0.005)
     expect(overlap.right).toBeGreaterThan(0.02)
     expect(overlap.left).toBeLessThan(overlap.right * 0.5)
@@ -692,6 +705,40 @@ describe('Issue #2 HTTP audio assembly regression', () => {
     mockOverlapMs = 400
     mockDuckPreviousDb = -12
   })
+
+  it.each(['/generate', '/createStream'])(
+    'honors a source interruption tag on %s when the LLM omits the control tag',
+    async (route) => {
+      const request = {
+        text:
+          `SOURCE_TAG_REPRO_${route.slice(1)} 医生：最近是哪里不舒服？` +
+          '患者：[interrupt overlap=1450 duck=-11]就是心口这一块，吃完饭没多久就顶得慌，跟塞了个东西在里头一样。',
+        voice: 'en-US-AriaNeural',
+        useLLM: true,
+        openaiBaseUrl: 'https://example.test/v1',
+        openaiKey: 'fixture-key',
+        openaiModel: 'fixture-model',
+      }
+      const response = await fetch(`${baseUrl}/api/v1/tts${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      let audioFile: string
+      if (route === '/generate') {
+        const body = await response.json()
+        expect(response.status).toBe(200)
+        audioFile = path.join(AUDIO_DIR, body.data.file)
+      } else {
+        expect(response.status).toBe(200)
+        expect(response.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
+        audioFile = path.join(probeDir, `source-tag-${Date.now()}.mp3`)
+        await fs.writeFile(audioFile, Buffer.from(await response.arrayBuffer()))
+      }
+
+      expect(await probeAudioDuration(audioFile)).toBeLessThan(fixtureDuration * 1.5)
+    }
+  )
 
   it.each(['/generate', '/createStream'])(
     'returns a safe failure and terminal state for injected media failure on %s',

@@ -13,6 +13,14 @@ import {
 } from '../utils/subtitle'
 import { clampFiniteNumber } from '../utils/safeNumber'
 
+const EDGE_SILENCE_THRESHOLD_DB = -45
+const MIN_EDGE_SILENCE_SECONDS = 0.08
+const EDGE_SILENCE_PADDING_SECONDS = 0.02
+const REACTION_DELAY_SECONDS = 0.1
+const DUCK_RAMP_SECONDS = 0.22
+const INTERRUPTED_TAIL_FADE_SECONDS = 0.35
+const NEW_SPEAKER_FADE_IN_SECONDS = 0.02
+
 export interface GeneratedFileBuildSegmentAudio {
   audioFile: string
 }
@@ -51,7 +59,15 @@ export type BuildSegmentAssemblyRequest =
 
 export interface TimelineBuildSegmentAssemblyResult {
   segmentStartsMs: number[]
+  segmentTrimStartsMs: number[]
+  segmentDurationsMs: number[]
   mixDurationMs: number
+}
+
+interface SegmentAudioBounds {
+  trimStartMs: number
+  trimEndMs: number
+  durationMs: number
 }
 
 /**
@@ -125,9 +141,9 @@ async function timelineMixAudio(
     throw new Error('Timeline Mix output must use an internal path')
   }
 
-  const durationsMs: number[] = []
+  const audioBounds: SegmentAudioBounds[] = []
   const internalAudioFiles: string[] = []
-  for (const segment of segments) {
+  for (const [index, segment] of segments.entries()) {
     const internalAudioFile = await fs.realpath(segment.audioFile).catch(() => undefined)
     if (!internalAudioFile) throw new Error('Timeline Mix input is missing or empty')
     if (!isPathInside(resolvedInputRoot, internalAudioFile)) {
@@ -138,8 +154,22 @@ async function timelineMixAudio(
       throw new Error('Timeline Mix input is missing or empty')
     }
     internalAudioFiles.push(internalAudioFile)
-    durationsMs.push(await probeDurationMs(internalAudioFile, signal))
+    const sourceDurationMs = await probeDurationMs(internalAudioFile, signal)
+    const trimLeadingSilence = index > 0 && segment.interrupt
+    const trimTrailingSilence = segments[index + 1]?.interrupt === true
+    audioBounds.push(
+      trimLeadingSilence || trimTrailingSilence
+        ? await probeSegmentAudioBounds(
+            internalAudioFile,
+            sourceDurationMs,
+            trimLeadingSilence,
+            trimTrailingSilence,
+            signal
+          )
+        : { trimStartMs: 0, trimEndMs: sourceDurationMs, durationMs: sourceDurationMs }
+    )
   }
+  const durationsMs = audioBounds.map((bounds) => bounds.durationMs)
 
   const startsMs = [0]
   const effectiveOverlapsMs = [0]
@@ -155,23 +185,57 @@ async function timelineMixAudio(
     )
   }
 
-  const filters = segments.map((_segment, index) => {
+  const filters = segments.map((segment, index) => {
+    const bounds = audioBounds[index]
     const filtersForInput = [
+      `atrim=start=${formatFfmpegNumber(bounds.trimStartMs / 1000)}:end=${formatFfmpegNumber(
+        bounds.trimEndMs / 1000
+      )}`,
+      'asetpts=PTS-STARTPTS',
       'aresample=44100',
       'aformat=sample_fmts=fltp:channel_layouts=stereo',
     ]
+    if (index > 0 && segment.interrupt) {
+      filtersForInput.push(
+        `afade=t=in:st=0:d=${formatFfmpegNumber(NEW_SPEAKER_FADE_IN_SECONDS)}`
+      )
+    }
     const nextSegment = segments[index + 1]
     const nextOverlapMs = effectiveOverlapsMs[index + 1] || 0
     if (nextSegment?.interrupt && nextOverlapMs > 0) {
       const duckDb = clampFiniteNumber(nextSegment.duckPreviousDb, -18, 0)
-      const duckStartSeconds = formatFfmpegNumber(
-        (durationsMs[index] - nextOverlapMs) / 1000
+      const durationSeconds = durationsMs[index] / 1000
+      const interruptionStartSeconds = Math.max(0, durationSeconds - nextOverlapMs / 1000)
+      const reactionEndSeconds = Math.min(
+        durationSeconds,
+        interruptionStartSeconds + REACTION_DELAY_SECONDS
       )
-      const durationSeconds = formatFfmpegNumber(durationsMs[index] / 1000)
-      const multiplier = formatFfmpegNumber(Math.pow(10, duckDb / 20))
-      filtersForInput.push(
-        `volume=${multiplier}:enable='between(t,${duckStartSeconds},${durationSeconds})'`
+      const rampEndSeconds = Math.min(
+        durationSeconds,
+        reactionEndSeconds + DUCK_RAMP_SECONDS
       )
+      const rampDurationSeconds = rampEndSeconds - reactionEndSeconds
+      if (rampDurationSeconds > 0) {
+        const reactionEnd = formatFfmpegNumber(reactionEndSeconds)
+        const rampDuration = formatFfmpegNumber(rampDurationSeconds)
+        const progress = `min(max((t-${reactionEnd})/${rampDuration},0),1)`
+        const easedProgress = `(1-cos(PI*${progress}))/2`
+        const gain = `pow(10,(${formatFfmpegNumber(duckDb)}/20)*(${easedProgress}))`
+        filtersForInput.push(`volume='if(lt(t,${reactionEnd}),1,${gain})':eval=frame`)
+      }
+
+      const tailFadeStartSeconds = Math.max(
+        rampEndSeconds,
+        durationSeconds - INTERRUPTED_TAIL_FADE_SECONDS
+      )
+      const tailFadeDurationSeconds = durationSeconds - tailFadeStartSeconds
+      if (tailFadeDurationSeconds > 0) {
+        filtersForInput.push(
+          `afade=t=out:st=${formatFfmpegNumber(
+            tailFadeStartSeconds
+          )}:d=${formatFfmpegNumber(tailFadeDurationSeconds)}`
+        )
+      }
     }
     filtersForInput.push(`adelay=${Math.round(startsMs[index])}:all=1`)
     return `[${index}:a]${filtersForInput.join(',')}[segment${index}]`
@@ -205,7 +269,12 @@ async function timelineMixAudio(
       throw new Error('Timeline Mix produced empty audio')
     }
     await fs.rename(temporaryOutput, outputFile)
-    return { segmentStartsMs: startsMs, mixDurationMs }
+    return {
+      segmentStartsMs: startsMs,
+      segmentTrimStartsMs: audioBounds.map((bounds) => Math.round(bounds.trimStartMs)),
+      segmentDurationsMs: durationsMs.map(Math.round),
+      mixDurationMs,
+    }
   } catch (error) {
     await fs.unlink(temporaryOutput).catch(() => undefined)
     throw error
@@ -234,12 +303,105 @@ async function probeDurationMs(audioFile: string, signal?: AbortSignal): Promise
   return durationSeconds * 1000
 }
 
+async function probeSegmentAudioBounds(
+  audioFile: string,
+  sourceDurationMs: number,
+  trimLeadingSilence: boolean,
+  trimTrailingSilence: boolean,
+  signal?: AbortSignal
+): Promise<SegmentAudioBounds> {
+  const { stderr } = await runMediaProcessCapture(
+    'ffmpeg',
+    [
+      '-hide_banner',
+      '-nostats',
+      '-i',
+      audioFile,
+      '-af',
+      `silencedetect=noise=${EDGE_SILENCE_THRESHOLD_DB}dB:d=${MIN_EDGE_SILENCE_SECONDS}`,
+      '-f',
+      'null',
+      '-',
+    ],
+    'Timeline Mix could not inspect edge silence',
+    signal
+  )
+  const intervals = parseSilenceIntervals(stderr, sourceDurationMs / 1000)
+  const edgeToleranceSeconds = 0.1
+  const leadingSilence = trimLeadingSilence
+    ? intervals.find(
+        (interval) =>
+          interval.start <= edgeToleranceSeconds &&
+          interval.end - interval.start >= MIN_EDGE_SILENCE_SECONDS
+      )
+    : undefined
+  const trailingSilence = trimTrailingSilence
+    ? [...intervals]
+        .reverse()
+        .find(
+          (interval) =>
+            interval.end >= sourceDurationMs / 1000 - edgeToleranceSeconds &&
+            interval.end - interval.start >= MIN_EDGE_SILENCE_SECONDS
+        )
+    : undefined
+  const trimStartMs = leadingSilence
+    ? Math.max(0, leadingSilence.end - EDGE_SILENCE_PADDING_SECONDS) * 1000
+    : 0
+  const trimEndMs = trailingSilence
+    ? Math.min(
+        sourceDurationMs / 1000,
+        trailingSilence.start + EDGE_SILENCE_PADDING_SECONDS
+      ) * 1000
+    : sourceDurationMs
+
+  if (trimEndMs - trimStartMs < MIN_EDGE_SILENCE_SECONDS * 1000) {
+    return { trimStartMs: 0, trimEndMs: sourceDurationMs, durationMs: sourceDurationMs }
+  }
+  return { trimStartMs, trimEndMs, durationMs: trimEndMs - trimStartMs }
+}
+
+function parseSilenceIntervals(
+  stderr: string,
+  sourceDurationSeconds: number
+): Array<{ start: number; end: number }> {
+  const intervals: Array<{ start: number; end: number }> = []
+  let silenceStart: number | undefined
+  for (const line of stderr.split(/\r?\n/)) {
+    const startMatch = line.match(/silence_start:\s*([0-9.]+)/)
+    if (startMatch) silenceStart = Number(startMatch[1])
+    const endMatch = line.match(/silence_end:\s*([0-9.]+)/)
+    if (endMatch && silenceStart !== undefined) {
+      intervals.push({ start: silenceStart, end: Number(endMatch[1]) })
+      silenceStart = undefined
+    }
+  }
+  if (silenceStart !== undefined) {
+    intervals.push({ start: silenceStart, end: sourceDurationSeconds })
+  }
+  return intervals.filter(
+    (interval) =>
+      Number.isFinite(interval.start) &&
+      Number.isFinite(interval.end) &&
+      interval.start >= 0 &&
+      interval.end > interval.start
+  )
+}
+
 async function runMediaProcess(
   command: 'ffmpeg' | 'ffprobe',
   args: string[],
   errorPrefix: string,
   signal?: AbortSignal
 ): Promise<string> {
+  return (await runMediaProcessCapture(command, args, errorPrefix, signal)).stdout
+}
+
+async function runMediaProcessCapture(
+  command: 'ffmpeg' | 'ffprobe',
+  args: string[],
+  errorPrefix: string,
+  signal?: AbortSignal
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError())
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -256,7 +418,7 @@ async function runMediaProcess(
     child.once('close', (code) => {
       signal?.removeEventListener('abort', onAbort)
       if (signal?.aborted) reject(abortError())
-      else if (code === 0) resolve(stdout)
+      else if (code === 0) resolve({ stdout, stderr })
       else reject(new Error(`${errorPrefix}: ${stderr.trim() || `process exited with ${code}`}`))
     })
   })
@@ -346,6 +508,8 @@ export interface BuildSegmentSubtitleAssemblyRequest {
   jsonFiles?: string[]
   metadataFileName?: string
   segmentStartsMs?: number[]
+  segmentTrimStartsMs?: number[]
+  segmentDurationsMs?: number[]
 }
 
 export async function assembleBuildSegmentSubtitles({
@@ -355,6 +519,8 @@ export async function assembleBuildSegmentSubtitles({
   jsonFiles,
   metadataFileName = 'all_splits.mp3.json',
   segmentStartsMs,
+  segmentTrimStartsMs,
+  segmentDurationsMs,
 }: BuildSegmentSubtitleAssemblyRequest): Promise<void> {
   const orderedJsonFiles = jsonFiles
     ? jsonFiles
@@ -367,7 +533,12 @@ export async function assembleBuildSegmentSubtitles({
   if (!subtitleFiles.length) throw new Error('No JSON files found for subtitles')
 
   const concatenatedSubtitles = segmentStartsMs
-    ? placeSubtitleFilesOnTimeline(subtitleFiles, segmentStartsMs)
+    ? placeSubtitleFilesOnTimeline(
+        subtitleFiles,
+        segmentStartsMs,
+        segmentTrimStartsMs,
+        segmentDurationsMs
+      )
     : concatSubtitleFiles(subtitleFiles)
   const tempJsonPath = path.resolve(inputDir, metadataFileName)
   await fs.writeFile(tempJsonPath, JSON.stringify(concatenatedSubtitles, null, 2))

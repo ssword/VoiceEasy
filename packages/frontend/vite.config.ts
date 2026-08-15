@@ -1,8 +1,9 @@
-import { defineConfig } from 'vitest/config';
-import vue from "@vitejs/plugin-vue";
-import path from "path";
-export default defineConfig({
+import { defineConfig } from 'vitest/config'
+import { loadEnv } from 'vite'
+import vue from '@vitejs/plugin-vue'
+import path from 'path'
 
+export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
@@ -12,9 +13,8 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: `http://localhost:${loadEnv('development', path.resolve(__dirname, '../..'), '').PORT || '3000'}`,
         changeOrigin: true,
-        rewrite: (path: string) => path.replace(/^\/api/, ""),
       },
     },
   },
@@ -25,4 +25,4 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
   },
-});
+})

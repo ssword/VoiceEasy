@@ -8,7 +8,12 @@ import {
   assembleBuildSegmentAudio,
   assembleBuildSegmentSubtitles,
 } from '../src/services/buildSegmentAssembly.service'
-import { createStereoToneMp3, probeAudioDuration, probeStereoRms } from './helpers/audio'
+import {
+  createStereoToneMp3,
+  createStereoToneWithLeadingSilenceMp3,
+  probeAudioDuration,
+  probeStereoRms,
+} from './helpers/audio'
 
 jest.mock('child_process', () => {
   const actual = jest.requireActual<typeof import('child_process')>('child_process')
@@ -128,7 +133,8 @@ describe('Build Segment audio assembly boundary', () => {
       expect(duration).toBeLessThan(1.7)
 
       const beforeOverlap = await probeStereoRms(outputFile, 0.2, 0.2)
-      const overlap = await probeStereoRms(outputFile, 0.7, 0.2)
+      const interruptionStart = result.segmentStartsMs[1] / 1000
+      const overlap = await probeStereoRms(outputFile, interruptionStart + 0.34, 0.04)
       expect(beforeOverlap.left).toBeGreaterThan(0.02)
       expect(beforeOverlap.right).toBeLessThan(0.002)
       expect(overlap.left).toBeGreaterThan(0.005)
@@ -139,6 +145,121 @@ describe('Build Segment audio assembly boundary', () => {
       expect(Number.isInteger(result.segmentStartsMs[1])).toBe(true)
       expect(result.segmentStartsMs[1]).toBeGreaterThan(550)
       expect(result.segmentStartsMs[1]).toBeLessThan(700)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('lets the interrupted Segment react before smoothly ducking', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-envelope-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 1.2, 'left'),
+        createStereoToneMp3(second, 880, 0.8, 'right'),
+      ])
+
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: second, interrupt: true, overlapMs: 500, duckPreviousDb: -12 },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      const interruptStart = result.segmentStartsMs[1] / 1000
+      const baseline = await probeStereoRms(outputFile, interruptStart - 0.12, 0.04)
+      const reaction = await probeStereoRms(outputFile, interruptStart + 0.04, 0.04)
+      const newSpeakerFadeIn = await probeStereoRms(outputFile, interruptStart + 0.002, 0.008)
+      const newSpeakerSettled = await probeStereoRms(outputFile, interruptStart + 0.04, 0.04)
+      const ramp = await probeStereoRms(outputFile, interruptStart + 0.2, 0.04)
+      const ducked = await probeStereoRms(outputFile, interruptStart + 0.34, 0.04)
+      const fadedTail = await probeStereoRms(outputFile, interruptStart + 0.46, 0.03)
+
+      expect(reaction.left).toBeGreaterThan(baseline.left * 0.8)
+      expect(newSpeakerFadeIn.right).toBeLessThan(newSpeakerSettled.right * 0.65)
+      expect(ramp.left).toBeLessThan(baseline.left * 0.8)
+      expect(ramp.left).toBeGreaterThan(baseline.left * 0.35)
+      expect(ducked.left).toBeLessThan(baseline.left * 0.4)
+      expect(fadedTail.left).toBeLessThan(ducked.left * 0.5)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('trims interruption-facing silence without tightening the following normal gap', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-silence-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const third = path.join(tempDir, 'third.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 1.2, 'left'),
+        createStereoToneWithLeadingSilenceMp3(second, 880, 0.75, 0.25, 'right', 0.2),
+        createStereoToneMp3(third, 660, 0.5, 'left'),
+      ])
+
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: second, interrupt: true, overlapMs: 500, duckPreviousDb: -8 },
+          { audioFile: third, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      const interruptStart = result.segmentStartsMs[1] / 1000
+      const interruptOnset = await probeStereoRms(outputFile, interruptStart + 0.04, 0.04)
+      expect(interruptOnset.right).toBeGreaterThan(0.02)
+      expect(result.segmentTrimStartsMs[1]).toBeGreaterThan(150)
+      expect(result.segmentDurationsMs[1]).toBeGreaterThan(950)
+      expect(result.segmentDurationsMs[1]).toBeLessThan(1100)
+      expect(result.segmentStartsMs[2] - result.segmentStartsMs[1]).toBeGreaterThan(950)
+      expect(result.segmentStartsMs[2] - result.segmentStartsMs[1]).toBeLessThan(1100)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves silence on a normal boundary inside a Timeline Mix batch', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-normal-gap-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const third = path.join(tempDir, 'third.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneWithLeadingSilenceMp3(first, 440, 0.5, 0.01, 'left', 0.2),
+        createStereoToneWithLeadingSilenceMp3(second, 660, 0.75, 0.25, 'right', 0.2),
+        createStereoToneMp3(third, 880, 0.5, 'left'),
+      ])
+      const firstSourceDurationMs = (await probeAudioDuration(first)) * 1000
+
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: second, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
+          { audioFile: third, interrupt: true, overlapMs: 500, duckPreviousDb: -8 },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      expect(result.segmentTrimStartsMs[0]).toBe(0)
+      expect(result.segmentTrimStartsMs[1]).toBe(0)
+      expect(result.segmentDurationsMs[0]).toBeGreaterThan(firstSourceDurationMs * 0.95)
+      expect(result.segmentStartsMs[1]).toBeGreaterThan(firstSourceDurationMs * 0.95)
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }
@@ -246,7 +367,7 @@ describe('Build Segment audio assembly boundary', () => {
     await fs.writeFile(inputFile, Buffer.from('non-empty internal fixture'))
 
     const spawn = jest.mocked(childProcess.spawn)
-    spawn.mockImplementation(((command: string) => {
+    spawn.mockImplementation(((command: string, args: readonly string[]) => {
       const child = new EventEmitter() as any
       child.stdout = new PassThrough()
       child.stderr = new PassThrough()
@@ -260,6 +381,10 @@ describe('Build Segment audio assembly boundary', () => {
             child.stdout.end('1.0\n')
             child.emit('close', 0)
           }
+          return
+        }
+        if (args.some((arg) => arg.includes('silencedetect='))) {
+          child.emit('close', 0)
           return
         }
         if (failureMode === 'mix-failure') {
@@ -452,6 +577,44 @@ describe('Build Segment audio assembly boundary', () => {
       expect(metadata).toEqual([
         { part: 'Current first', start: 0, end: 500 },
         { part: 'Current second', start: 600, end: 1100 },
+      ])
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('subtracts trimmed leading silence and bounds subtitles to audible Segment duration', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-trimmed-srt-'))
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+    const jsonFiles = [path.join(tempDir, '1.json'), path.join(tempDir, '2.json')]
+
+    try {
+      await Promise.all([
+        fs.writeFile(
+          jsonFiles[0],
+          JSON.stringify([{ part: 'First', start: 100, end: 950 }])
+        ),
+        fs.writeFile(
+          jsonFiles[1],
+          JSON.stringify([{ part: 'Interrupted', start: 0, end: 900 }])
+        ),
+      ])
+
+      await assembleBuildSegmentSubtitles({
+        inputDir: tempDir,
+        outputFile,
+        jsonFiles,
+        segmentStartsMs: [0, 600],
+        segmentTrimStartsMs: [80, 240],
+        segmentDurationsMs: [800, 620],
+      })
+
+      const metadata = JSON.parse(
+        await fs.readFile(path.join(tempDir, 'all_splits.mp3.json'), 'utf8')
+      )
+      expect(metadata).toEqual([
+        { part: 'First', start: 20, end: 800 },
+        { part: 'Interrupted', start: 600, end: 1220 },
       ])
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })

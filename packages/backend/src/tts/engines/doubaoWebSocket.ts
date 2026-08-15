@@ -44,6 +44,8 @@ export type DoubaoWebSocketFactory = (
 export interface DoubaoStreamingRequest {
   apiKey: string
   resourceId: string
+  speaker: string
+  model: string
   payload: Record<string, unknown>
   onDiagnostic?: (diagnostic: DoubaoStreamingDiagnostic) => void
 }
@@ -51,6 +53,7 @@ export interface DoubaoStreamingRequest {
 export interface DoubaoStreamingDiagnostic {
   status: 'completed' | 'failed'
   audioBytes: number
+  error?: string
 }
 
 type ServerFrame = {
@@ -75,10 +78,13 @@ export function createDoubaoAudioStream(
   let socket: DoubaoWebSocketLike
   let diagnosticReported = false
 
-  const reportDiagnostic = (status: DoubaoStreamingDiagnostic['status']) => {
+  const reportDiagnostic = (
+    status: DoubaoStreamingDiagnostic['status'],
+    error?: Error
+  ) => {
     if (diagnosticReported) return
     diagnosticReported = true
-    request.onDiagnostic?.({ status, audioBytes })
+    request.onDiagnostic?.({ status, audioBytes, error: error?.message })
   }
 
   const stream = new Readable({
@@ -101,7 +107,7 @@ export function createDoubaoAudioStream(
   const fail = (error: Error) => {
     if (failure || sessionFinished) return
     failure = redactError(error, request.apiKey)
-    reportDiagnostic('failed')
+    reportDiagnostic('failed', failure)
     stream.destroy(failure)
   }
 

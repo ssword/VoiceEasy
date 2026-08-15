@@ -76,7 +76,11 @@ describe('Doubao Engine API discovery', () => {
         name: 'doubao-tts',
         languages: expect.arrayContaining(['zh-CN', 'en-US']),
         supportsSubtitles: false,
-        voices: [expect.objectContaining({ Name: 'zh_female_tianmeitaozi_mars_bigtts' })],
+        voices: expect.arrayContaining([
+          expect.objectContaining({ Name: 'zh_female_vv_uranus_bigtts' }),
+          expect.objectContaining({ Name: 'en_male_tim_uranus_bigtts' }),
+          expect.objectContaining({ Name: 'en_female_dacey_uranus_bigtts' }),
+        ]),
       }),
     ])
     expect(JSON.stringify(data)).not.toContain('private-doubao-key')
@@ -86,25 +90,28 @@ describe('Doubao Engine API discovery', () => {
   it('returns only Doubao Voices from the selected Voice List', async () => {
     const { status, data } = await get('/api/v1/tts/voiceList?engine=doubao-tts')
     expect(status).toBe(200)
-    expect(data.data).toEqual([
+    expect(data.data).toHaveLength(13)
+    expect(data.data).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        Name: 'zh_female_tianmeitaozi_mars_bigtts',
+        Name: 'zh_female_vv_uranus_bigtts',
         Gender: 'Female',
         language: 'zh-CN',
       }),
-    ])
+      expect.objectContaining({ Name: 'en_male_tim_uranus_bigtts', language: 'en-US' }),
+      expect.objectContaining({ Name: 'en_female_dacey_uranus_bigtts', language: 'en-US' }),
+    ]))
   })
 
   it('uses the registered Doubao Voice List for LLM Recommendation', async () => {
     await expect(resolveRecommendationVoices('doubao-tts', [])).resolves.toContainEqual(
-      expect.objectContaining({ Name: 'zh_female_tianmeitaozi_mars_bigtts' })
+      expect.objectContaining({ Name: 'zh_female_vv_uranus_bigtts' })
     )
   })
 
   it('generates normal audio through the selected Doubao Engine', async () => {
     const { status, data } = await post('/api/v1/tts/generate', {
       text: `这是豆包普通生成接口测试，运行编号${runId}。`,
-      voice: 'zh_female_tianmeitaozi_mars_bigtts',
+      voice: 'zh_female_vv_uranus_bigtts',
       engine: 'doubao-tts',
     })
 
@@ -122,7 +129,7 @@ describe('Doubao Engine API discovery', () => {
     const text = `这是一个需要拆分的豆包长文本句子，运行编号${runId}。`.repeat(200)
     const { status, data } = await post('/api/v1/tts/create', {
       text,
-      voice: 'zh_female_tianmeitaozi_mars_bigtts',
+      voice: 'zh_female_vv_uranus_bigtts',
       engine: 'doubao-tts',
     })
     expect(status).toBe(200)
