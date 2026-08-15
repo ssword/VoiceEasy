@@ -38,8 +38,8 @@ import {
   TimelineBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
 import {
-  normalizeRecommendationSegments,
-  prepareInterruptionSourceText,
+  normalizeTimelineControlSegments,
+  prepareTimelineControlSourceText,
 } from './recommendationInterruptions'
 import { logAudioGenerationJson } from '../utils/audioGenerationLog'
 
@@ -124,8 +124,8 @@ async function generateWithLLMStream(task: Task) {
   const { segment, voiceList, lang, engine } = task.context as Required<NonNullable<Task['context']>>
   const enableInterruptions = task.fields.enableInterruptions === true
   const { text, id } = segment
-  const interruptionSource = prepareInterruptionSourceText(text.trim())
-  const { length, segments } = splitText(interruptionSource.text)
+  const timelineControlSource = prepareTimelineControlSourceText(text.trim())
+  const { length, segments } = splitText(timelineControlSource.text)
   const toBuildSegments = (llmSegments: any[]) =>
     enforceRecommendationVoices(llmSegments, voiceList)
       .filter((segment: any) => segment.text)
@@ -149,10 +149,10 @@ async function generateWithLLMStream(task: Task) {
     textSegment: string,
     includeSourceDirectives = false
   ): Promise<BuildSegment[]> =>
-    normalizeRecommendationSegments(
+    normalizeTimelineControlSegments(
       await recommendBuildSegments(textSegment),
       enableInterruptions,
-      includeSourceDirectives ? interruptionSource : undefined
+      includeSourceDirectives ? timelineControlSource : undefined
     ) as unknown as BuildSegment[]
 
   if (length <= 1) {
@@ -190,10 +190,10 @@ async function generateWithLLMStream(task: Task) {
         logger.info(`Progress: ${getProgress()}%`)
       }
       await assembleRecommendedSegments(
-        normalizeRecommendationSegments(
+        normalizeTimelineControlSegments(
           recommendedSegments,
           true,
-          interruptionSource
+          timelineControlSource
         ) as unknown as BuildSegment[],
         task
       )
@@ -313,9 +313,7 @@ async function bufferTimelineBuildSegments(
       if (cachedAudioStat?.isFile() && cachedAudioStat.size > 0) {
         generatedSegments.push({
           audioFile: cachedAudioFile!,
-          interrupt: buildSegment.interrupt === true,
-          overlapMs: buildSegment.overlapMs || 0,
-          duckPreviousDb: buildSegment.duckPreviousDb || 0,
+          timelineControl: buildSegment.timelineControl,
         })
         if (supportsSubtitles) subtitleJsonFiles.push(`${cachedAudioFile}.json`)
         continue
@@ -340,9 +338,7 @@ async function bufferTimelineBuildSegments(
       })
       generatedSegments.push({
         audioFile,
-        interrupt: buildSegment.interrupt === true,
-        overlapMs: buildSegment.overlapMs || 0,
-        duckPreviousDb: buildSegment.duckPreviousDb || 0,
+        timelineControl: buildSegment.timelineControl,
       })
     }
 

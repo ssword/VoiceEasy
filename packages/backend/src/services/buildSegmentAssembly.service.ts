@@ -26,9 +26,10 @@ export interface GeneratedFileBuildSegmentAudio {
 }
 
 export interface TimelineBuildSegmentAudio extends GeneratedFileBuildSegmentAudio {
-  interrupt: boolean
-  overlapMs: number
-  duckPreviousDb: number
+  timelineControl?: TimelineControl
+  interrupt?: boolean
+  overlapMs?: number
+  duckPreviousDb?: number
 }
 
 export interface GeneratedStreamBuildSegmentAudio {
@@ -155,8 +156,8 @@ async function timelineMixAudio(
     }
     internalAudioFiles.push(internalAudioFile)
     const sourceDurationMs = await probeDurationMs(internalAudioFile, signal)
-    const trimLeadingSilence = index > 0 && segment.interrupt
-    const trimTrailingSilence = segments[index + 1]?.interrupt === true
+    const trimLeadingSilence = index > 0 && isInterruption(segment)
+    const trimTrailingSilence = isInterruption(segments[index + 1])
     audioBounds.push(
       trimLeadingSilence || trimTrailingSilence
         ? await probeSegmentAudioBounds(
@@ -174,8 +175,8 @@ async function timelineMixAudio(
   const startsMs = [0]
   const effectiveOverlapsMs = [0]
   for (let index = 1; index < segments.length; index++) {
-    const overlapMs = segments[index].interrupt
-      ? clampFiniteNumber(segments[index].overlapMs, 0, 1000)
+    const overlapMs = isInterruption(segments[index])
+      ? interruptionOverlapMs(segments[index])
       : 0
     const effectiveOverlapMs = Math.min(overlapMs, durationsMs[index - 1])
     effectiveOverlapsMs[index] = effectiveOverlapMs
@@ -195,15 +196,15 @@ async function timelineMixAudio(
       'aresample=44100',
       'aformat=sample_fmts=fltp:channel_layouts=stereo',
     ]
-    if (index > 0 && segment.interrupt) {
+    if (index > 0 && isInterruption(segment)) {
       filtersForInput.push(
         `afade=t=in:st=0:d=${formatFfmpegNumber(NEW_SPEAKER_FADE_IN_SECONDS)}`
       )
     }
     const nextSegment = segments[index + 1]
     const nextOverlapMs = effectiveOverlapsMs[index + 1] || 0
-    if (nextSegment?.interrupt && nextOverlapMs > 0) {
-      const duckDb = clampFiniteNumber(nextSegment.duckPreviousDb, -18, 0)
+    if (nextSegment && isInterruption(nextSegment) && nextOverlapMs > 0) {
+      const duckDb = interruptionDuckPreviousDb(nextSegment)
       const durationSeconds = durationsMs[index] / 1000
       const interruptionStartSeconds = Math.max(0, durationSeconds - nextOverlapMs / 1000)
       const reactionEndSeconds = Math.min(
@@ -279,6 +280,25 @@ async function timelineMixAudio(
     await fs.unlink(temporaryOutput).catch(() => undefined)
     throw error
   }
+}
+
+function isInterruption(segment: TimelineBuildSegmentAudio | undefined): boolean {
+  if (!segment) return false
+  return segment.timelineControl?.type === 'interruption'
+    ? interruptionOverlapMs(segment) > 0
+    : segment.interrupt === true && interruptionOverlapMs(segment) > 0
+}
+
+function interruptionOverlapMs(segment: TimelineBuildSegmentAudio): number {
+  return segment.timelineControl?.type === 'interruption'
+    ? clampFiniteNumber(segment.timelineControl.overlapMs, 0, 1000)
+    : clampFiniteNumber(segment.overlapMs, 0, 1000)
+}
+
+function interruptionDuckPreviousDb(segment: TimelineBuildSegmentAudio): number {
+  return segment.timelineControl?.type === 'interruption'
+    ? clampFiniteNumber(segment.timelineControl.duckPreviousDb, -18, 0)
+    : clampFiniteNumber(segment.duckPreviousDb, -18, 0)
 }
 
 async function probeDurationMs(audioFile: string, signal?: AbortSignal): Promise<number> {

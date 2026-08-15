@@ -1,3 +1,7 @@
+type TimelineControl =
+  | { type: 'serial' }
+  | { type: 'interruption'; overlapMs: number; duckPreviousDb: number }
+
 interface Segment {
   id: string
   text: string
@@ -21,6 +25,7 @@ interface TTSParams {
   interrupt?: boolean
   overlapMs?: number
   duckPreviousDb?: number
+  timelineControl?: TimelineControl
 }
 type BuildSegment = TTSParams & {
   text: string

@@ -10,13 +10,13 @@ const request = (change: Record<string, unknown> = {}) => ({
 describe('Issue #14 — Timeline Control request compatibility', () => {
   it('uses enableTimelineControls as the canonical request field', () => {
     expect(normalizeTtsRequest(request({ enableTimelineControls: true }))).toEqual(
-      expect.objectContaining({ enableInterruptions: true })
+      expect.objectContaining({ enableTimelineControls: true, enableInterruptions: true })
     )
   })
 
   it('preserves legacy enableInterruptions requests when canonical is absent', () => {
     expect(normalizeTtsRequest(request({ enableInterruptions: true }))).toEqual(
-      expect.objectContaining({ enableInterruptions: true })
+      expect.objectContaining({ enableTimelineControls: true, enableInterruptions: true })
     )
   })
 
@@ -25,6 +25,6 @@ describe('Issue #14 — Timeline Control request compatibility', () => {
       normalizeTtsRequest(
         request({ enableTimelineControls: false, enableInterruptions: true })
       )
-    ).toEqual(expect.objectContaining({ enableInterruptions: false }))
+    ).toEqual(expect.objectContaining({ enableTimelineControls: false, enableInterruptions: false }))
   })
 })

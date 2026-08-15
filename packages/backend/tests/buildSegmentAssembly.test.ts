@@ -122,7 +122,10 @@ describe('Build Segment audio assembly boundary', () => {
         strategy: 'timeline-mix',
         segments: [
           { audioFile: first, interrupt: false, overlapMs: 0, duckPreviousDb: 0 },
-          { audioFile: second, interrupt: true, overlapMs: 400, duckPreviousDb: -12 },
+          {
+            audioFile: second,
+            timelineControl: { type: 'interruption', overlapMs: 400, duckPreviousDb: -12 },
+          },
         ],
         inputRoot: tempDir,
         outputFile,
@@ -145,6 +148,41 @@ describe('Build Segment audio assembly boundary', () => {
       expect(Number.isInteger(result.segmentStartsMs[1])).toBe(true)
       expect(result.segmentStartsMs[1]).toBeGreaterThan(550)
       expect(result.segmentStartsMs[1]).toBeLessThan(700)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('treats a zero-overlap canonical Interruption as a serial boundary', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-zero-overlap-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 1, 'left'),
+        createStereoToneMp3(second, 880, 1, 'right'),
+      ])
+
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first },
+          {
+            audioFile: second,
+            timelineControl: { type: 'interruption', overlapMs: 0, duckPreviousDb: -12 },
+          },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      expect(result.segmentStartsMs[1]).toBeGreaterThan(950)
+      expect(result.segmentStartsMs[1]).toBeLessThan(1_050)
+      const boundary = await probeStereoRms(outputFile, 1.04, 0.04)
+      expect(boundary.left).toBeLessThan(0.002)
+      expect(boundary.right).toBeGreaterThan(0.02)
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true })
     }

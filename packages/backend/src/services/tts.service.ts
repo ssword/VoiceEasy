@@ -32,8 +32,8 @@ import {
   TimelineBuildSegmentAudio,
 } from './buildSegmentAssembly.service'
 import {
-  normalizeRecommendationSegments,
-  prepareInterruptionSourceText,
+  normalizeTimelineControlSegments,
+  prepareTimelineControlSourceText,
 } from './recommendationInterruptions'
 import { logAudioGenerationJson } from '../utils/audioGenerationLog'
 
@@ -140,16 +140,16 @@ async function generateWithLLM(
   task?: Task
 ): Promise<TTSResult> {
   const { text, id } = segment
-  const interruptionSource = prepareInterruptionSourceText(text.trim())
-  const { length, segments } = splitText(interruptionSource.text)
+  const timelineControlSource = prepareTimelineControlSourceText(text.trim())
+  const { length, segments } = splitText(timelineControlSource.text)
 
   const effectiveVoiceList = await resolveRecommendationVoices(engine, voiceList)
 
   const formatLlmSegments = (llmSegments: any, includeSourceDirectives = false) =>
-    normalizeRecommendationSegments(
+    normalizeTimelineControlSegments(
       enforceRecommendationVoices(llmSegments, effectiveVoiceList),
       enableInterruptions,
-      includeSourceDirectives ? interruptionSource : undefined
+      includeSourceDirectives ? timelineControlSource : undefined
     )
       .filter((segment: any) => segment.text)
       .map((segment: any) => ({
@@ -239,10 +239,10 @@ async function generateWithLLM(
       }
     }
     if (enableInterruptions) {
-      const normalizedSegments = normalizeRecommendationSegments(
+      const normalizedSegments = normalizeTimelineControlSegments(
         globalBuildSegments,
         true,
-        interruptionSource
+        timelineControlSource
       ) as unknown as BuildSegment[]
       logAudioGenerationJson(normalizedSegments)
       return buildSegmentList(
@@ -438,16 +438,18 @@ async function buildSegmentList(
     return [
       {
         audioFile: result.value.audio as string,
-        interrupt: buildSegment.interrupt === true,
-        overlapMs: buildSegment.overlapMs || 0,
-        duckPreviousDb: buildSegment.duckPreviousDb || 0,
+        timelineControl: buildSegment.timelineControl,
       },
     ]
   })
   const fileList = generatedSegments.map((segment) => segment.audioFile)
   const outputFile = path.resolve(AUDIO_DIR, id)
   const hasEffectiveInterruption = generatedSegments.some(
-    (segment, index) => index > 0 && segment.interrupt && segment.overlapMs > 0
+    (segment, index) =>
+      index > 0 &&
+      (segment.timelineControl?.type === 'interruption'
+        ? segment.timelineControl.overlapMs > 0
+        : segment.interrupt === true && (segment.overlapMs || 0) > 0)
   )
   logger.debug('Assembling Segment audio', {
     segmentCount: fileList.length,
