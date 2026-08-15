@@ -27,4 +27,10 @@ describe('Issue #14 — Timeline Control request compatibility', () => {
       )
     ).toEqual(expect.objectContaining({ enableTimelineControls: false, enableInterruptions: false }))
   })
+
+  it('treats a manual Pause tag as an explicit Timeline Control opt-in', () => {
+    expect(normalizeTtsRequest(request({ text: 'First. [pause duration=900ms]Second.' }))).toEqual(
+      expect.objectContaining({ enableTimelineControls: true, enableInterruptions: true })
+    )
+  })
 })

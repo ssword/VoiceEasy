@@ -61,4 +61,13 @@ describe('Issue #14 — Timeline Control request toggle', () => {
       )
     ).toEqual(expect.objectContaining({ enableTimelineControls: true }))
   })
+
+  it('enables Timeline Controls when text contains a manual Pause tag', () => {
+    expect(
+      buildGenerateRequest(
+        config({ voiceMode: 'ai', enableTimelineControls: false }),
+        'First speaker. [pause duration=850ms]Second speaker.'
+      )
+    ).toEqual(expect.objectContaining({ enableTimelineControls: true }))
+  })
 })

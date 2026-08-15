@@ -205,7 +205,8 @@
                 />
                 <span class="setting-hint">
                   长文本会先完成全部分段和混音再开始播放；
-                  自动抢话建议可用；手动添加 [interrupt] 标签时会自动启用
+                  自动抢话建议可用；手动添加 [interrupt] 或 [pause]
+                  标签时会自动启用
                 </span>
               </el-form-item>
             </el-form>

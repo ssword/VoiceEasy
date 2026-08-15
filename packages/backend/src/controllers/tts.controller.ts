@@ -129,6 +129,10 @@ export async function generateAudio(req: Request, res: Response, next: NextFunct
         audioBytes: await audioByteLength(AUDIO_DIR, result.audio),
       }),
     })
+    if (generationDiagnostics.generationMode === 'timeline-mix') {
+      res.setHeader('x-generate-tts-type', 'buffered-timeline')
+      res.setHeader('Access-Control-Expose-Headers', 'x-generate-tts-type')
+    }
     res.json(responseResult)
   } catch (error) {
     logger.error('Direct TTS request failed', {

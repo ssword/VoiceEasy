@@ -18,9 +18,18 @@ interface InterruptionSourceDirective {
   duckPreviousDb: number
 }
 
+interface PauseSourceDirective {
+  offset: number
+  type: 'pause'
+  durationMs: number
+}
+
+type TimelineControlSourceDirective = InterruptionSourceDirective | PauseSourceDirective
+type ParsedTimelineControl = Exclude<TimelineControl, { type: 'serial' }>
+
 export interface TimelineControlSourceContext {
   text: string
-  directives: InterruptionSourceDirective[]
+  directives: TimelineControlSourceDirective[]
 }
 
 /** Kept for callers that have not yet migrated to the Timeline Control name. */
@@ -28,7 +37,9 @@ export type InterruptionSourceContext = TimelineControlSourceContext
 
 const DEFAULT_TAG_OVERLAP_MS = 600
 const DEFAULT_TAG_DUCK_DB = -8
-const interruptionTagPattern = () => /\[interrupt(?:\s+[^\]\r\n]*)?\][ \t]*/gi
+const DEFAULT_PAUSE_DURATION_MS = 700
+const MAX_PAUSE_DURATION_MS = 300000
+const timelineControlTagPattern = () => /\[(?:interrupt|pause)(?:\s+[^\]\r\n]*)?\][ \t]*/gi
 
 export class TimelineControlValidationError extends Error {
   readonly statusCode = 400
@@ -40,28 +51,30 @@ export class TimelineControlValidationError extends Error {
 }
 
 export function hasTimelineControlTag(text: unknown): boolean {
-  return typeof text === 'string' && interruptionTagPattern().test(text)
+  return typeof text === 'string' && timelineControlTagPattern().test(text)
 }
 
 /** @deprecated Use hasTimelineControlTag. */
 export const hasInterruptionControlTag = hasTimelineControlTag
 
+export function validateTimelineControlTags(text: unknown): void {
+  if (typeof text !== 'string') return
+  for (const match of text.matchAll(timelineControlTagPattern())) {
+    parseTimelineControlTag(match[0])
+  }
+}
+
 /** Remove source Timeline Control tags before LLM Recommendation and retain their text positions. */
 export function prepareTimelineControlSourceText(text: string): TimelineControlSourceContext {
-  const directives: InterruptionSourceDirective[] = []
+  const directives: TimelineControlSourceDirective[] = []
   let cleanText = ''
   let cursor = 0
 
-  for (const match of text.matchAll(interruptionTagPattern())) {
+  for (const match of text.matchAll(timelineControlTagPattern())) {
     const index = match.index ?? 0
     cleanText += text.slice(cursor, index)
-    const attributes = parseInterruptionTag(match[0])
-    directives.push({
-      offset: cleanText.length,
-      type: 'interruption',
-      overlapMs: attributes.overlapMs ?? DEFAULT_TAG_OVERLAP_MS,
-      duckPreviousDb: attributes.duckPreviousDb ?? DEFAULT_TAG_DUCK_DB,
-    })
+    const control = parseTimelineControlTag(match[0])
+    directives.push({ offset: cleanText.length, ...control })
     cursor = index + match[0].length
   }
   cleanText += text.slice(cursor)
@@ -85,39 +98,42 @@ export function normalizeTimelineControlSegments(
 
   return segments.map((value, index) => {
     const segment = isRecord(value) ? value : {}
-    const tag = extractInterruptionTag(segment.text)
+    const tags = extractTimelineControlTags(segment.text)
     const directives = sourceDirectives.get(index) || []
     const canonicalControl = parseCanonicalTimelineControl(segment.timelineControl)
     const legacyControl = parseLegacyTimelineControl(segment)
 
     validateTimelineControlSources({
       index,
-      tagCount: tag.count,
+      tags,
       sourceDirectives: directives,
       canonicalControl,
       legacyControl,
     })
 
-    const normalizedSegment = tag.text === segment.text ? segment : { ...segment, text: tag.text }
+    const normalizedSegment = tags.text === segment.text ? segment : { ...segment, text: tags.text }
     const sourceDirective = directives[0]
+    const requestedControl =
+      sourceDirective ?? tags.controls[0] ?? canonicalControl ?? legacyControl
+    if (index === 0 || !requestedControl || !enableTimelineControls) {
+      return toNormalizedSegment(normalizedSegment, { type: 'serial' })
+    }
+
+    if (requestedControl.type === 'pause') {
+      if (sourceDirective?.type !== 'pause') {
+        return toNormalizedSegment(normalizedSegment, { type: 'serial' })
+      }
+      return toNormalizedSegment(
+        normalizedSegment,
+        requestedControl.durationMs > 0
+          ? { type: 'pause', durationMs: requestedControl.durationMs }
+          : { type: 'serial' }
+      )
+    }
     const interruptionRequested =
-      enableTimelineControls &&
-      index > 0 &&
-      (sourceDirective !== undefined ||
-        tag.count > 0 ||
-        legacyControl?.type === 'interruption' ||
-        canonicalControl?.type === 'interruption')
+      requestedControl.type === 'interruption'
     const overlapMs = interruptionRequested
-      ? clampFiniteNumber(
-          sourceDirective?.overlapMs ??
-            (tag.count > 0
-              ? (tag.overlapMs ?? DEFAULT_TAG_OVERLAP_MS)
-              : canonicalControl?.type === 'interruption'
-                ? canonicalControl.overlapMs
-                : segment.overlapMs),
-          0,
-          1000
-        )
+      ? clampFiniteNumber(requestedControl.overlapMs, 0, 1000)
       : 0
 
     if (!interruptionRequested || overlapMs === 0) {
@@ -125,12 +141,7 @@ export function normalizeTimelineControlSegments(
     }
 
     const duckPreviousDb = clampFiniteNumber(
-      sourceDirective?.duckPreviousDb ??
-        (tag.count > 0
-          ? (tag.duckPreviousDb ?? DEFAULT_TAG_DUCK_DB)
-          : canonicalControl?.type === 'interruption'
-            ? canonicalControl.duckPreviousDb
-            : segment.duckPreviousDb),
+      requestedControl.duckPreviousDb,
       -18,
       0
     )
@@ -152,6 +163,15 @@ function toNormalizedSegment(
   if (timelineControl.type === 'serial') {
     return { ...segment, timelineControl, interrupt: false, overlapMs: 0, duckPreviousDb: 0 }
   }
+  if (timelineControl.type === 'pause') {
+    return {
+      ...segment,
+      timelineControl,
+      interrupt: false,
+      overlapMs: 0,
+      duckPreviousDb: 0,
+    }
+  }
   return {
     ...segment,
     timelineControl,
@@ -163,19 +183,19 @@ function toNormalizedSegment(
 
 function validateTimelineControlSources({
   index,
-  tagCount,
+  tags,
   sourceDirectives,
   canonicalControl,
   legacyControl,
 }: {
   index: number
-  tagCount: number
-  sourceDirectives: InterruptionSourceDirective[]
+  tags: { controls: TimelineControl[] }
+  sourceDirectives: TimelineControlSourceDirective[]
   canonicalControl: TimelineControl | undefined
   legacyControl: TimelineControl | undefined
 }): void {
   const controlTypes = [
-    ...Array(tagCount).fill('interruption'),
+    ...tags.controls.map((control) => control.type),
     ...sourceDirectives.map((directive) => directive.type),
     ...(canonicalControl ? [canonicalControl.type] : []),
     ...(legacyControl ? [legacyControl.type] : []),
@@ -189,7 +209,8 @@ function validateTimelineControlSources({
   }
 
   throw new TimelineControlValidationError(
-    `Timeline Control validation failed: duplicate Interruption directives on Segment ${index + 1}`
+    'Timeline Control validation failed: duplicate Timeline Control directives on ' +
+      `Segment ${index + 1}`
   )
 }
 
@@ -206,34 +227,68 @@ function parseCanonicalTimelineControl(value: unknown): TimelineControl | undefi
       duckPreviousDb: clampFiniteNumber(value.duckPreviousDb, -18, 0),
     }
   }
+  if (value.type === 'pause') {
+    return { type: 'pause', durationMs: parsePauseDuration(value.durationMs) }
+  }
   throw new TimelineControlValidationError('Timeline Control validation failed: invalid canonical control')
 }
 
 function parseLegacyTimelineControl(segment: Record<string, unknown>): TimelineControl | undefined {
   if (!Object.prototype.hasOwnProperty.call(segment, 'interrupt')) return undefined
-  return segment.interrupt === true ? { type: 'interruption', overlapMs: 0, duckPreviousDb: 0 } : { type: 'serial' }
+  return segment.interrupt === true
+    ? {
+        type: 'interruption',
+        overlapMs: clampFiniteNumber(segment.overlapMs, 0, 1000),
+        duckPreviousDb: clampFiniteNumber(segment.duckPreviousDb, -18, 0),
+      }
+    : { type: 'serial' }
 }
 
-function extractInterruptionTag(value: unknown): {
+function extractTimelineControlTags(value: unknown): {
   text: unknown
-  count: number
-  overlapMs?: number
-  duckPreviousDb?: number
+  controls: TimelineControl[]
 } {
-  if (typeof value !== 'string') return { text: value, count: 0 }
+  if (typeof value !== 'string') return { text: value, controls: [] }
 
-  let count = 0
-  let overlapMs: number | undefined
-  let duckPreviousDb: number | undefined
-  const text = value.replace(interruptionTagPattern(), (tag) => {
-    count++
-    const attributes = parseInterruptionTag(tag)
-    if (attributes.overlapMs !== undefined) overlapMs = attributes.overlapMs
-    if (attributes.duckPreviousDb !== undefined) duckPreviousDb = attributes.duckPreviousDb
+  const controls: TimelineControl[] = []
+  const text = value.replace(timelineControlTagPattern(), (tag) => {
+    controls.push(parseTimelineControlTag(tag))
     return ''
   })
 
-  return { text, count, overlapMs, duckPreviousDb }
+  return { text, controls }
+}
+
+function parseTimelineControlTag(tag: string): ParsedTimelineControl {
+  if (/^\[pause(?:\s|\])/i.test(tag)) {
+    const attributes = tag.slice(1, -1).replace(/^pause/i, '').trim()
+    if (!attributes) return { type: 'pause', durationMs: DEFAULT_PAUSE_DURATION_MS }
+    const durationMatch = attributes.match(
+      /^duration\s*=\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*(?:ms)?$/i
+    )
+    if (!durationMatch) {
+      throw new TimelineControlValidationError(
+        'Pause duration must be a finite number from 0 through 300000 ms'
+      )
+    }
+    return { type: 'pause', durationMs: parsePauseDuration(Number(durationMatch[1])) }
+  }
+  const attributes = parseInterruptionTag(tag)
+  return {
+    type: 'interruption',
+    overlapMs: attributes.overlapMs ?? DEFAULT_TAG_OVERLAP_MS,
+    duckPreviousDb: attributes.duckPreviousDb ?? DEFAULT_TAG_DUCK_DB,
+  }
+}
+
+function parsePauseDuration(value: unknown): number {
+  const durationMs = Number(value)
+  if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > MAX_PAUSE_DURATION_MS) {
+    throw new TimelineControlValidationError(
+      'Pause duration must be a finite number from 0 through 300000 ms'
+    )
+  }
+  return durationMs
 }
 
 function parseInterruptionTag(tag: string): {
@@ -255,8 +310,8 @@ function parseInterruptionTag(tag: string): {
 function mapSourceDirectivesToSegments(
   segments: unknown[],
   source?: TimelineControlSourceContext
-): Map<number, InterruptionSourceDirective[]> {
-  const mapped = new Map<number, InterruptionSourceDirective[]>()
+): Map<number, TimelineControlSourceDirective[]> {
+  const mapped = new Map<number, TimelineControlSourceDirective[]>()
   if (!source?.directives.length) return mapped
 
   const comparableSegments = segments.map((value) =>

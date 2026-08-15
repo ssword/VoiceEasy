@@ -4,7 +4,10 @@ import { z } from 'zod'
 import { logger } from '../utils/logger'
 import { openai } from '../utils/openai'
 import { ttsPluginManager } from '../tts/pluginManager'
-import { hasInterruptionControlTag } from '../services/recommendationInterruptions'
+import {
+  hasTimelineControlTag,
+  validateTimelineControlTags,
+} from '../services/recommendationInterruptions'
 
 const timelineControlRequestFields = {
   enableTimelineControls: z.boolean().optional(),
@@ -12,11 +15,22 @@ const timelineControlRequestFields = {
   enableInterruptions: z.boolean().optional(),
 }
 
-function rejectInterruptionTagsWithoutLlm(text: string, ctx: z.RefinementCtx) {
-  if (!hasInterruptionControlTag(text)) return
+function validateTimelineControlText(text: string, ctx: z.RefinementCtx) {
+  try {
+    validateTimelineControlTags(text)
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: (error as Error).message,
+      path: ['text'],
+    })
+    return
+  }
+  if (!hasTimelineControlTag(text)) return
+  const tagName = /\[pause(?:\s|\])/i.test(text) ? 'Pause' : 'Interruption'
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
-    message: 'Interruption tags require LLM Recommendation',
+    message: `${tagName} tags require LLM Recommendation`,
     path: ['text'],
   })
 }
@@ -40,7 +54,7 @@ export const edgeSchema = z
       }),
   })
   .superRefine(({ text }, ctx) => {
-    rejectInterruptionTagsWithoutLlm(text, ctx)
+    validateTimelineControlText(text, ctx)
   })
 
 export const llmSchema = z.object({
@@ -59,6 +73,16 @@ export const llmSchema = z.object({
   ),
   useLLM: z.boolean().default(true),
   ...timelineControlRequestFields,
+}).superRefine(({ text }, ctx) => {
+  try {
+    validateTimelineControlTags(text)
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: (error as Error).message,
+      path: ['text'],
+    })
+  }
 })
 
 const dataItemSchema = z
@@ -78,7 +102,7 @@ const dataItemSchema = z
       }),
   })
   .superRefine(({ text }, ctx) => {
-    rejectInterruptionTagsWithoutLlm(text, ctx)
+    validateTimelineControlText(text, ctx)
   })
 
 const jsonSchema = z.object({

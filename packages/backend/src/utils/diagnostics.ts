@@ -12,6 +12,8 @@ export interface GenerationDiagnostics {
   retryCount: number
   generationMode: 'concat' | 'stream' | 'timeline-mix'
   effectiveInterruptionCount: number
+  effectivePauseCount: number
+  effectivePauseDurationMs: number
   mixDurationMs: number
 }
 
@@ -23,6 +25,8 @@ export function createGenerationDiagnostics(segmentCount = 0): GenerationDiagnos
     retryCount: 0,
     generationMode: 'concat',
     effectiveInterruptionCount: 0,
+    effectivePauseCount: 0,
+    effectivePauseDurationMs: 0,
     mixDurationMs: 0,
   }
 }
@@ -42,6 +46,8 @@ export function generationRuntimeMetadata(
     retryCount: diagnostics?.retryCount || 0,
     generationMode: diagnostics?.generationMode || 'concat',
     effectiveInterruptionCount: diagnostics?.effectiveInterruptionCount || 0,
+    effectivePauseCount: diagnostics?.effectivePauseCount || 0,
+    effectivePauseDurationMs: diagnostics?.effectivePauseDurationMs || 0,
     mixDurationMs: diagnostics?.mixDurationMs || 0,
     ...overrides,
   }

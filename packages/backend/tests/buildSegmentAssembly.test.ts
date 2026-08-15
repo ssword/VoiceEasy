@@ -153,6 +153,74 @@ describe('Build Segment audio assembly boundary', () => {
     }
   })
 
+  it('adds Pause after natural boundary duration without a silent subtitle Segment', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-pause-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 1, 'left'),
+        createStereoToneMp3(second, 880, 1, 'right'),
+      ])
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, timelineControl: { type: 'serial' } },
+          { audioFile: second, timelineControl: { type: 'pause', durationMs: 700 } },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      expect(result.segmentStartsMs[1]).toBeGreaterThan(1650)
+      expect(result.segmentStartsMs[1]).toBeLessThan(1800)
+      expect(await probeAudioDuration(outputFile)).toBeGreaterThan(2.55)
+      expect(await probeStereoRms(outputFile, 1.3, 0.1)).toEqual(
+        expect.objectContaining({ left: expect.any(Number), right: expect.any(Number) })
+      )
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  it('accumulates a Pause before a following Interruption', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-pause-mixed-'))
+    const first = path.join(tempDir, 'first.mp3')
+    const second = path.join(tempDir, 'second.mp3')
+    const third = path.join(tempDir, 'third.mp3')
+    const outputFile = path.join(tempDir, 'timeline.mp3')
+
+    try {
+      await Promise.all([
+        createStereoToneMp3(first, 440, 1, 'left'),
+        createStereoToneMp3(second, 660, 1, 'right'),
+        createStereoToneMp3(third, 880, 1, 'left'),
+      ])
+      const result = await assembleBuildSegmentAudio({
+        strategy: 'timeline-mix',
+        segments: [
+          { audioFile: first, timelineControl: { type: 'serial' } },
+          { audioFile: second, timelineControl: { type: 'pause', durationMs: 700 } },
+          {
+            audioFile: third,
+            timelineControl: { type: 'interruption', overlapMs: 300, duckPreviousDb: -8 },
+          },
+        ],
+        inputRoot: tempDir,
+        outputFile,
+      })
+
+      expect(result.segmentStartsMs[1]).toBeGreaterThan(1650)
+      expect(result.segmentStartsMs[1]).toBeLessThan(1800)
+      expect(result.segmentStartsMs[2] - result.segmentStartsMs[1]).toBeGreaterThan(650)
+      expect(result.segmentStartsMs[2] - result.segmentStartsMs[1]).toBeLessThan(800)
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it('treats a zero-overlap canonical Interruption as a serial boundary', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'easyvoice-timeline-zero-overlap-'))
     const first = path.join(tempDir, 'first.mp3')

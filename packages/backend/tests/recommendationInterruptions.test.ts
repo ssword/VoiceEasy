@@ -252,3 +252,69 @@ describe('Issue #15 — Timeline Control normalization contract', () => {
     )
   })
 })
+
+describe('Issue #16 — manual Pause Timeline Control', () => {
+  it('maps a manual Pause to its affected Segment with the default duration', () => {
+    const source = prepareTimelineControlSourceText('First line. [pause]Second line.')
+    const [, second] = normalizeTimelineControlSegments(
+      [{ text: 'First line.' }, { text: 'Second line.' }],
+      true,
+      source
+    )
+
+    expect(source.text).toBe('First line. Second line.')
+    expect(second).toEqual(
+      expect.objectContaining({ timelineControl: { type: 'pause', durationMs: 700 } })
+    )
+  })
+
+  it('accepts duration syntax and removes zero or first-Segment Pauses as no-ops', () => {
+    const source = prepareTimelineControlSourceText(
+      '[pause duration=850ms]First line.[pause duration=0]Second line.' +
+        '[pause duration=1250]Third line.'
+    )
+    const normalized = normalizeTimelineControlSegments(
+      [
+        { text: 'First line.' },
+        { text: 'Second line.' },
+        { text: 'Third line.' },
+      ],
+      true,
+      source
+    )
+
+    expect(normalized.map((segment) => segment.timelineControl)).toEqual([
+      { type: 'serial' },
+      { type: 'serial' },
+      { type: 'pause', durationMs: 1250 },
+    ])
+    expect(normalized.map((segment) => segment.text)).toEqual([
+      'First line.',
+      'Second line.',
+      'Third line.',
+    ])
+  })
+
+  it.each([
+    '[pause duration=-1]Second',
+    '[pause duration=300001]Second',
+    '[pause duration=soon]Second',
+  ])('rejects malformed or out-of-range Pause syntax: %s', (text) => {
+    expect(() => prepareTimelineControlSourceText(text)).toThrow(
+      /Pause duration.*0 through 300000/i
+    )
+  })
+
+  it('does not turn an LLM-inferred Pause into a manual Timeline Control', () => {
+    const [, second] = normalizeTimelineControlSegments(
+      [
+        { text: 'First line.' },
+        { text: '[pause]Second line.' },
+      ],
+      true
+    )
+
+    expect(second.timelineControl).toEqual({ type: 'serial' })
+    expect(second.text).toBe('Second line.')
+  })
+})

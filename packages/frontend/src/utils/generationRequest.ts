@@ -1,8 +1,8 @@
 import type { AudioConfig } from '@/stores/audioConfig'
 import type { GenerateRequest } from '@/api/tts'
 
-const hasInterruptionControlTag = (text: string) =>
-  /\[interrupt(?:\s+[^\]\r\n]*)?\]/i.test(text)
+const hasTimelineControlTag = (text: string) =>
+  /\[(?:interrupt|pause)(?:\s+[^\]\r\n]*)?\]/i.test(text)
 
 export function buildGenerateRequest(
   audioConfig: AudioConfig,
@@ -23,7 +23,7 @@ export function buildGenerateRequest(
 
   params.useLLM = true
   params.enableTimelineControls =
-    audioConfig.enableTimelineControls || hasInterruptionControlTag(params.text)
+    audioConfig.enableTimelineControls || hasTimelineControlTag(params.text)
   params.openaiBaseUrl = audioConfig.openaiBaseUrl
   params.openaiKey = audioConfig.openaiKey
   params.openaiModel = audioConfig.openaiModel

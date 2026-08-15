@@ -178,11 +178,12 @@ async function timelineMixAudio(
     const overlapMs = isInterruption(segments[index])
       ? interruptionOverlapMs(segments[index])
       : 0
+    const pauseMs = pauseDurationMs(segments[index])
     const effectiveOverlapMs = Math.min(overlapMs, durationsMs[index - 1])
     effectiveOverlapsMs[index] = effectiveOverlapMs
     startsMs[index] = Math.max(
       0,
-      Math.round(startsMs[index - 1] + durationsMs[index - 1] - effectiveOverlapMs)
+      Math.round(startsMs[index - 1] + durationsMs[index - 1] - effectiveOverlapMs + pauseMs)
     )
   }
 
@@ -299,6 +300,12 @@ function interruptionDuckPreviousDb(segment: TimelineBuildSegmentAudio): number 
   return segment.timelineControl?.type === 'interruption'
     ? clampFiniteNumber(segment.timelineControl.duckPreviousDb, -18, 0)
     : clampFiniteNumber(segment.duckPreviousDb, -18, 0)
+}
+
+function pauseDurationMs(segment: TimelineBuildSegmentAudio): number {
+  return segment.timelineControl?.type === 'pause'
+    ? clampFiniteNumber(segment.timelineControl.durationMs, 0, 300000)
+    : 0
 }
 
 async function probeDurationMs(audioFile: string, signal?: AbortSignal): Promise<number> {

@@ -62,7 +62,7 @@ describe('Issue #6 — final Audio Assembly cache identity', () => {
 
     expect(identity).toEqual(
       expect.objectContaining({
-        cacheVersion: 2,
+        cacheVersion: 3,
         enableInterruptions: true,
         mode: 'timeline-mix',
         timelineMixAlgorithmVersion: TIMELINE_MIX_ALGORITHM_VERSION,
@@ -109,5 +109,30 @@ describe('Issue #6 — final Audio Assembly cache identity', () => {
     expect(createSynthesisCacheKey(segments[1])).toBe(
       createSynthesisCacheKey({ ...segments[1], overlapMs: 200, duckPreviousDb: -6 })
     )
+  })
+
+  it('isolates effective Pause timelines without changing Segment synthesis cache keys', () => {
+    const paused = [
+      segments[0],
+      { ...segments[1], timelineControl: { type: 'pause' as const, durationMs: 700 } },
+    ]
+    const longerPause = [
+      segments[0],
+      { ...segments[1], timelineControl: { type: 'pause' as const, durationMs: 1200 } },
+    ]
+
+    const identity = createFinalAudioCacheIdentity({ enableInterruptions: true, segments: paused })
+    expect(identity).toEqual(
+      expect.objectContaining({
+        mode: 'timeline-mix',
+        timeline: expect.arrayContaining([
+          expect.objectContaining({ type: 'pause', pauseDurationMs: 700, interrupt: false }),
+        ]),
+      })
+    )
+    expect(createFinalAudioCacheKey({ enableInterruptions: true, segments: paused })).not.toBe(
+      createFinalAudioCacheKey({ enableInterruptions: true, segments: longerPause })
+    )
+    expect(createSynthesisCacheKey(paused[1])).toBe(createSynthesisCacheKey(longerPause[1]))
   })
 })

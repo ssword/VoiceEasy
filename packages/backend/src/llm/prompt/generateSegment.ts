@@ -158,6 +158,7 @@ export function getPrompt(
           'Also prefix that Segment text with the EasyVoice control tag',
           '`[interrupt overlap=600 duck=-8]`, using the same numeric values.',
           'EasyVoice removes this tag before sending text to the speech engine.',
+          'Never infer or add a `[pause]` tag; Pause is only preserved from a manual source tag.',
           'Apart from this control tag, you must not add, delete, duplicate, rewrite, or reorder text.',
           '',
         ].join('\n')
@@ -172,6 +173,7 @@ export function getPrompt(
           '同时在该 Segment 的 text 开头添加 EasyVoice 控制标签',
           '`[interrupt overlap=600 duck=-8]`，标签数值应与字段一致。',
           'EasyVoice 会在发送给语音引擎前移除该标签。',
+          '不要推断或添加 `[pause]` 标签；Pause 只保留原文中的手动标签。',
           '除这个控制标签外，不得新增、删除、重复、改写或重排任何原文。',
           '',
         ].join('\n')

@@ -90,7 +90,7 @@ pnpm start
 
 ## 高级
 
-### AI 抢话与打断（Timeline Mix）
+### AI 抢话、打断与停顿（Timeline Mix）
 
 启用 AI 推荐时，可以让 EasyVoice 识别原文中明确的打断、抢话或急切反驳，并让后一位说话者在前一段结束前开始说话。前一段声音会在重叠区域自动降低音量，使对话更自然。
 
@@ -129,11 +129,20 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
   -o timeline-mix.mp3
 ```
 
-也可以在 AI 推荐请求的原文中手动标记抢话。标签应放在抢话者文本的开头：
+也可以在 AI 推荐请求的原文中手动标记抢话或停顿。
+标签应放在受影响文本的开头：
 
 ```text
 甲：我只是想说——
 [interrupt overlap=600 duck=-8]乙：别说了，快跑！
+```
+
+`[pause]` 会在当前段之前增加 700 毫秒的明确静音；也可以指定 0–300000
+毫秒的时长：
+
+```text
+甲：我需要想一想。
+[pause duration=1200ms]乙：好，我们慢慢来。
 ```
 
 该标签可以和 Qwen 原生情感标签组合：
@@ -142,15 +151,32 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
 [angry][interrupt overlap=500 duck=-14]别再说了！
 ```
 
-`[angry]` 会保留并交给 Qwen 控制情绪；`[interrupt ...]` 会由 EasyVoice 转换为 Timeline Mix 参数，并在发送给语音引擎前从文本中删除。简写 `[interrupt]` 默认使用 600 毫秒重叠和 -8 dB 音量衰减。Timeline Mix 只会在抢话交界处保守裁剪超过约 80 毫秒的边缘静音，普通对话之间仍保留语音引擎原有的停顿；被打断者有 100 毫秒反应时间、220 毫秒平滑降音和最长 350 毫秒尾部淡出，抢话者使用 20 毫秒淡入。手动标签本身就是明确启用信号，因此即使没有另外设置 `enableTimelineControls: true`，EasyVoice 也会自动启用 Timeline Mix。
+`[angry]` 会保留并交给 Qwen 控制情绪；`[interrupt ...]` 和 `[pause ...]` 会由
+EasyVoice 转换为 Timeline Mix 参数，并在发送给语音引擎前从文本中删除。简写
+`[interrupt]` 默认使用 600 毫秒重叠和 -8 dB 音量衰减；简写 `[pause]` 默认增加
+700 毫秒静音。Pause 与 Interruption 不能同时作用于同一段，且第一段和
+`duration=0` 的 Pause 会被当作无操作。Pause 在语音引擎自然生成的边界停顿之后
+额外增加静音，不会造成衰减、淡入淡出或重叠。Timeline Mix 只会在抢话交界处
+保守裁剪超过约 80 毫秒的边缘静音，普通对话之间仍保留语音引擎原有的停顿；
+被打断者有 100 毫秒反应时间、220 毫秒平滑降音和最长 350 毫秒尾部淡出，
+抢话者使用 20 毫秒淡入。手动标签本身就是明确启用信号，因此即使没有另外设置
+`enableTimelineControls: true`，EasyVoice 也会自动启用 Timeline Mix。
 
 参数说明：
 
 - `useLLM: true`：让 AI 对原文分段并推荐角色、声音和语音参数。
-- `enableTimelineControls: true`：允许 LLM Recommendation 为原文中明确存在的打断生成重叠时间线。此设置当前只控制自动 Interruption；只开启此参数而不启用 `useLLM` 不会生效。
-- `interrupt`、`overlapMs` 和 `duckPreviousDb` 由 AI 推荐流程或 EasyVoice 抢话标签生成，无需作为请求字段手动传入。其中重叠时间限制为 0–1000 毫秒，前一段的音量衰减限制为 -18–0 dB，第一段不能打断其他段落。
-- 如果原文没有明确的打断含义，音频仍按普通顺序拼接。设置 `enableTimelineControls: false` 可以始终使用原有的顺序拼接行为。
-- `/createStream` 检测到有效抢话时会先完成 Timeline Mix，再以 MP3 返回；响应头 `x-generate-tts-type` 的值为 `buffered-timeline`，因此首个音频字节会比普通流式模式稍晚到达。
+- `enableTimelineControls: true`：允许 LLM Recommendation 为原文中明确存在的打断生成
+  Interruption。Pause 不会由 LLM 自动推断，只能通过手动 `[pause]` 标签添加；
+  只开启此参数而不启用 `useLLM` 不会生效。
+- `interrupt`、`overlapMs` 和 `duckPreviousDb` 由 AI 推荐流程或 EasyVoice
+  抢话标签生成，无需作为请求字段手动传入。其中重叠时间限制为 0–1000 毫秒，
+  前一段的音量衰减限制为 -18–0 dB，第一段不能打断其他段落。
+  `[pause duration=<number>]` 的 `ms` 后缀可选，时长必须是 0–300000 的有限数值。
+- Timeline Control 标签仅限 LLM Recommendation。有效 Pause 会移动后续字幕时间，
+  不会创建空白字幕条目；没有有效 Timeline Control 时仍按普通顺序拼接。
+- `/createStream` 检测到有效抢话或 Pause 时会先完成 Timeline Mix，再以 MP3 返回；
+  响应头 `x-generate-tts-type` 的值为 `buffered-timeline`，因此首个音频字节会
+  比普通流式模式稍晚到达。
 
 ### 角色自定义
 

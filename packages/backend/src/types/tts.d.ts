@@ -1,6 +1,7 @@
 type TimelineControl =
   | { type: 'serial' }
   | { type: 'interruption'; overlapMs: number; duckPreviousDb: number }
+  | { type: 'pause'; durationMs: number }
 
 interface Segment {
   id: string

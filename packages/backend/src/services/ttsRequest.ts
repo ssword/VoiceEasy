@@ -1,5 +1,5 @@
 import type { EdgeSchema } from '../schema/generate'
-import { hasInterruptionControlTag } from './recommendationInterruptions'
+import { hasTimelineControlTag } from './recommendationInterruptions'
 import { DEFAULT_ENGINE, MODEL_NAME } from '../config'
 
 type TtsRequestBody = Pick<EdgeSchema, 'text' | 'voice'> &
@@ -32,7 +32,9 @@ export function normalizeTtsRequest({
   enableTimelineControls,
   enableInterruptions: legacyEnableInterruptions,
 }: TtsRequestBody) {
-  const timelineControlsEnabled = enableTimelineControls ?? legacyEnableInterruptions ?? false
+  const hasManualTimelineControl = hasTimelineControlTag(text)
+  const timelineControlsEnabled =
+    (enableTimelineControls ?? legacyEnableInterruptions ?? false) || hasManualTimelineControl
 
   return {
     text: text.trim(),
@@ -44,7 +46,7 @@ export function normalizeTtsRequest({
     enableTimelineControls: timelineControlsEnabled,
     enableInterruptions:
       useLLM === true &&
-      (timelineControlsEnabled || hasInterruptionControlTag(text)),
+      timelineControlsEnabled,
     engine: engine || DEFAULT_ENGINE,
     instruction: instruction || '',
     recommendationModel: useLLM ? openaiModel || MODEL_NAME || '' : '',

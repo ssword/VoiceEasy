@@ -3,8 +3,8 @@ import { DEFAULT_ENGINE } from '../config'
 import { ttsPluginManager } from '../tts/pluginManager'
 import { clampFiniteNumber } from '../utils/safeNumber'
 
-export const FINAL_AUDIO_CACHE_VERSION = 2
-export const TIMELINE_MIX_ALGORITHM_VERSION = 'timeline-mix-v3-natural-boundaries'
+export const FINAL_AUDIO_CACHE_VERSION = 3
+export const TIMELINE_MIX_ALGORITHM_VERSION = 'timeline-mix-v4-manual-pause'
 
 export interface SynthesisCacheIdentity {
   engine: string
@@ -33,6 +33,7 @@ export type SynthesisCacheInput = Pick<TTSParams, 'text' | 'voice'> &
     interrupt?: boolean
     overlapMs?: number
     duckPreviousDb?: number
+    timelineControl?: TimelineControl
   }
 
 export interface FinalAudioCacheInput {
@@ -51,9 +52,11 @@ export interface FinalAudioCacheIdentity {
   recommendationModel: string
   timeline: Array<{
     synthesisKey: string
+    type: TimelineControl['type']
     interrupt: boolean
     overlapMs: number
     duckPreviousDb: number
+    pauseDurationMs: number
   }>
 }
 
@@ -94,24 +97,21 @@ export function createFinalAudioCacheIdentity(
   input: FinalAudioCacheInput
 ): FinalAudioCacheIdentity {
   const timeline = input.segments.map((segment, index) => {
-    const interrupt =
-      input.enableInterruptions &&
-      index > 0 &&
-      segment.interrupt === true &&
-      clampFiniteNumber(segment.overlapMs, 0, 1000) > 0
+    const control = normalizedTimelineControl(segment, index, input.enableInterruptions)
+    const interrupt = control.type === 'interruption'
     return {
       synthesisKey: createSynthesisCacheKey(segment),
+      type: control.type,
       interrupt,
-      overlapMs: interrupt ? clampFiniteNumber(segment.overlapMs, 0, 1000) : 0,
-      duckPreviousDb: interrupt
-        ? clampFiniteNumber(segment.duckPreviousDb, -18, 0)
-        : 0,
+      overlapMs: interrupt ? control.overlapMs : 0,
+      duckPreviousDb: interrupt ? control.duckPreviousDb : 0,
+      pauseDurationMs: control.type === 'pause' ? control.durationMs : 0,
     }
   })
   return {
     cacheVersion: FINAL_AUDIO_CACHE_VERSION,
     enableInterruptions: input.enableInterruptions,
-    mode: timeline.some((segment) => segment.interrupt) ? 'timeline-mix' : 'concat',
+    mode: timeline.some((segment) => segment.type !== 'serial') ? 'timeline-mix' : 'concat',
     timelineMixAlgorithmVersion: TIMELINE_MIX_ALGORITHM_VERSION,
     sourceKey: crypto
       .createHash('sha256')
@@ -120,6 +120,36 @@ export function createFinalAudioCacheIdentity(
     recommendationModel: input.recommendationModel || '',
     timeline,
   }
+}
+
+function normalizedTimelineControl(
+  segment: SynthesisCacheInput,
+  index: number,
+  enabled: boolean
+): TimelineControl {
+  if (!enabled || index === 0) return { type: 'serial' }
+  if (segment.timelineControl?.type === 'pause') {
+    const durationMs = clampFiniteNumber(segment.timelineControl.durationMs, 0, 300000)
+    return durationMs > 0 ? { type: 'pause', durationMs } : { type: 'serial' }
+  }
+  if (segment.timelineControl?.type === 'interruption') {
+    const overlapMs = clampFiniteNumber(segment.timelineControl.overlapMs, 0, 1000)
+    return overlapMs > 0
+      ? {
+          type: 'interruption',
+          overlapMs,
+          duckPreviousDb: clampFiniteNumber(segment.timelineControl.duckPreviousDb, -18, 0),
+        }
+      : { type: 'serial' }
+  }
+  const overlapMs = segment.interrupt === true ? clampFiniteNumber(segment.overlapMs, 0, 1000) : 0
+  return overlapMs > 0
+    ? {
+        type: 'interruption',
+        overlapMs,
+        duckPreviousDb: clampFiniteNumber(segment.duckPreviousDb, -18, 0),
+      }
+    : { type: 'serial' }
 }
 
 export function createFinalAudioCacheKey(input: FinalAudioCacheInput): string {

@@ -383,9 +383,18 @@ async function buildSegmentList(
     diagnostics.effectiveInterruptionCount = finalCache.identity.timeline.filter(
       (item) => item.interrupt
     ).length
+    diagnostics.effectivePauseCount = finalCache.identity.timeline.filter(
+      (item) => item.type === 'pause'
+    ).length
+    diagnostics.effectivePauseDurationMs = finalCache.identity.timeline.reduce(
+      (total, item) => total + item.pauseDurationMs,
+      0
+    )
     logger.info('Final Audio Assembly cache hit', {
       generationMode: diagnostics.generationMode,
       effectiveInterruptionCount: diagnostics.effectiveInterruptionCount,
+      effectivePauseCount: diagnostics.effectivePauseCount,
+      effectivePauseDurationMs: diagnostics.effectivePauseDurationMs,
       segmentCount: length,
     })
     return cachedFinalAudio
@@ -444,16 +453,10 @@ async function buildSegmentList(
   })
   const fileList = generatedSegments.map((segment) => segment.audioFile)
   const outputFile = path.resolve(AUDIO_DIR, id)
-  const hasEffectiveInterruption = generatedSegments.some(
-    (segment, index) =>
-      index > 0 &&
-      (segment.timelineControl?.type === 'interruption'
-        ? segment.timelineControl.overlapMs > 0
-        : segment.interrupt === true && (segment.overlapMs || 0) > 0)
-  )
+  const hasEffectiveTimelineControl = finalCache.identity.mode === 'timeline-mix'
   logger.debug('Assembling Segment audio', {
     segmentCount: fileList.length,
-    strategy: hasEffectiveInterruption ? 'timeline-mix' : 'concat',
+    strategy: hasEffectiveTimelineControl ? 'timeline-mix' : 'concat',
   })
   let segmentStartsMs: number[] | undefined
   let segmentTrimStartsMs: number[] | undefined
@@ -465,11 +468,18 @@ async function buildSegmentList(
     return engine?.supportsSubtitles !== false
   })
   try {
-    if (hasEffectiveInterruption) {
+    if (hasEffectiveTimelineControl) {
       diagnostics.generationMode = 'timeline-mix'
       diagnostics.effectiveInterruptionCount = finalCache.identity.timeline.filter(
         (item) => item.interrupt
       ).length
+      diagnostics.effectivePauseCount = finalCache.identity.timeline.filter(
+        (item) => item.type === 'pause'
+      ).length
+      diagnostics.effectivePauseDurationMs = finalCache.identity.timeline.reduce(
+        (total, item) => total + item.pauseDurationMs,
+        0
+      )
       const timelineResult = await assembleBuildSegmentAudio({
         strategy: 'timeline-mix',
         segments: generatedSegments,

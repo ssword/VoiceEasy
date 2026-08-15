@@ -70,6 +70,7 @@ describe('Issue #3 — interruption-aware LLM Recommendation prompt', () => {
     expect(prompt).toMatch(/unfinished speech/i)
     expect(prompt).toMatch(/urgent rebuttal/i)
     expect(prompt).toMatch(/must not add, delete, duplicate, rewrite, or reorder/i)
+    expect(prompt).toMatch(/Never infer or add a `\[pause\]` tag/i)
   })
 
   it('does not offer interruption fields when the capability is disabled', () => {

@@ -261,6 +261,13 @@ async function assembleRecommendedSegments(segments: BuildSegment[], task: Task)
         task.context.diagnostics.effectiveInterruptionCount = finalCache.identity.timeline.filter(
           (item) => item.interrupt
         ).length
+        task.context.diagnostics.effectivePauseCount = finalCache.identity.timeline.filter(
+          (item) => item.type === 'pause'
+        ).length
+        task.context.diagnostics.effectivePauseDurationMs = finalCache.identity.timeline.reduce(
+          (total, item) => total + item.pauseDurationMs,
+          0
+        )
         task.context.diagnostics.audioBytes = 0
       }
       streamTaskToResponse(task, createReadStream(cachedAudioFile), {
@@ -292,6 +299,13 @@ async function bufferTimelineBuildSegments(
       task.context.diagnostics.effectiveInterruptionCount = finalCache.identity.timeline.filter(
         (item) => item.interrupt
       ).length
+      task.context.diagnostics.effectivePauseCount = finalCache.identity.timeline.filter(
+        (item) => item.type === 'pause'
+      ).length
+      task.context.diagnostics.effectivePauseDurationMs = finalCache.identity.timeline.reduce(
+        (total, item) => total + item.pauseDurationMs,
+        0
+      )
     }
     const generatedSegments: TimelineBuildSegmentAudio[] = []
     const subtitleJsonFiles: string[] = []

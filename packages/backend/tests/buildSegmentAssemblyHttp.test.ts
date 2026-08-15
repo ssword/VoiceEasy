@@ -56,14 +56,16 @@ jest.mock('../src/utils/openai', () => ({
     createChatCompletion: jest.fn(async (request: any) => {
       const prompt = String(request.messages?.at(-1)?.content || '')
       const sourceTagMarker = prompt.match(/SOURCE_TAG_REPRO_(?:generate|createStream)/)?.[0]
-      const isSourceTagRepro = sourceTagMarker !== undefined
+      const pauseSourceTagMarker = prompt.match(/PAUSE_SOURCE_REPRO_(?:generate|createStream)/)?.[0]
+      const sourceMarker = sourceTagMarker || pauseSourceTagMarker
+      const isSourceTagRepro = sourceMarker !== undefined
       mockPipelineEvents.push(
         `recommend:${prompt.includes('SECOND_BATCH') ? 'second' : 'first'}`
       )
       const segments = isSourceTagRepro
         ? [
             {
-              text: `${sourceTagMarker} 医生：最近是哪里不舒服？`,
+              text: `${sourceMarker} 医生：最近是哪里不舒服？`,
               name: 'en-US-AriaNeural',
             },
             {
@@ -728,6 +730,7 @@ describe('Issue #2 HTTP audio assembly regression', () => {
       if (route === '/generate') {
         const body = await response.json()
         expect(response.status).toBe(200)
+        expect(response.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
         audioFile = path.join(AUDIO_DIR, body.data.file)
       } else {
         expect(response.status).toBe(200)
@@ -737,6 +740,55 @@ describe('Issue #2 HTTP audio assembly regression', () => {
       }
 
       expect(await probeAudioDuration(audioFile)).toBeLessThan(fixtureDuration * 1.5)
+    }
+  )
+
+  it.each(['/generate', '/createStream'])(
+    'honors a source Pause tag on %s, buffers Timeline Mix, and shifts later subtitles',
+    async (route) => {
+      const request = {
+        text:
+          `PAUSE_SOURCE_REPRO_${route.slice(1)} 医生：最近是哪里不舒服？` +
+          '[pause duration=700ms]' +
+          '患者：就是心口这一块，吃完饭没多久就顶得慌。',
+        voice: 'en-US-AriaNeural',
+        useLLM: true,
+        openaiBaseUrl: 'https://example.test/v1',
+        openaiKey: 'fixture-key',
+        openaiModel: 'fixture-model',
+      }
+      const response = await fetch(`${baseUrl}/api/v1/tts${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      let audioFile: string
+      let subtitleFile: string | undefined
+      if (route === '/generate') {
+        const body = await response.json()
+        expect(response.status).toBe(200)
+        audioFile = path.join(AUDIO_DIR, body.data.file)
+        subtitleFile = path.join(AUDIO_DIR, path.basename(body.data.srt))
+      } else {
+        expect(response.status).toBe(200)
+        expect(response.headers.get('x-generate-tts-type')).toBe('buffered-timeline')
+        audioFile = path.join(probeDir, `source-pause-${Date.now()}.mp3`)
+        await fs.writeFile(audioFile, Buffer.from(await response.arrayBuffer()))
+      }
+
+      expect(await probeAudioDuration(audioFile)).toBeGreaterThan(fixtureDuration * 2 + 0.5)
+      if (subtitleFile) {
+        const subtitles = await fs.readFile(subtitleFile, 'utf8')
+        const cueStarts = [...subtitles.matchAll(/(\d\d):(\d\d):(\d\d),(\d{3}) -->/g)].map(
+          (match) =>
+            Number(match[1]) * 3600 +
+            Number(match[2]) * 60 +
+            Number(match[3]) +
+            Number(match[4]) / 1000
+        )
+        expect(cueStarts).toHaveLength(2)
+        expect(cueStarts[1]).toBeGreaterThan(1.5)
+      }
     }
   )
 

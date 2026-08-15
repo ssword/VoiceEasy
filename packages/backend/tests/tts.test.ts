@@ -498,6 +498,29 @@ describe('Ticket 02 — Backend Pipeline: engine routing through TtsPluginManage
       expect(synthesize).not.toHaveBeenCalled()
     })
 
+    it('rejects malformed manual Pause durations before LLM Recommendation synthesis', async () => {
+      const { status, data } = await fetchFromServer(server, '/api/v1/tts/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: 'First speaker. [pause duration=too-long]Second speaker.',
+          useLLM: true,
+          openaiBaseUrl: 'https://example.test/v1',
+          openaiKey: 'fixture-key',
+          openaiModel: 'fixture-model',
+        }),
+      })
+
+      expect(status).toBe(400)
+      expect(data.success).toBe(false)
+      expect(data.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining('Pause duration') }),
+        ])
+      )
+      expect(synthesize).not.toHaveBeenCalled()
+    })
+
     it(
       'accepts LLM Recommendation without a preset voice',
       async () => {
