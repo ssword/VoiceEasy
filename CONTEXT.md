@@ -32,6 +32,22 @@ _Avoid_: Request, task item
 The boundary that turns ordered, generated Build Segment audio into one final audio output while remaining independent of Segment synthesis. Concat is its serial form.
 _Avoid_: Merge, join, combine
 
+**Timeline Control**:
+An explicit relation between a Segment and its immediate predecessor that changes their placement during Audio Assembly.
+_Avoid_: Audio effect, punctuation, transition
+
+**Interruption**:
+A Timeline Control that starts the current Segment before its predecessor ends, with an attenuation envelope on the predecessor.
+_Avoid_: Crossfade, overlap
+
+**Pause**:
+A Timeline Control that inserts a specified interval of silence before the current Segment begins.
+_Avoid_: Natural pause, punctuation pause
+
+**Timeline Mix**:
+An Audio Assembly mode that resolves Timeline Controls into one ordered audio timeline.
+_Avoid_: Crossfade, engine mixing
+
 **LLM Recommendation**:
 Using an LLM to analyze text and automatically assign voices and parameters to segments, replacing manual voice selection.
 _Avoid_: AI配音, auto-dubbing, smart voice
