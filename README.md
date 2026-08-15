@@ -92,6 +92,68 @@ pnpm start:root
 
 ## 高级
 
+### AI 抢话与打断（Timeline Mix）
+
+启用 AI 推荐时，可以让 EasyVoice 识别原文中明确的打断、抢话或急切反驳，并让后一位说话者在前一段结束前开始说话。前一段声音会在重叠区域自动降低音量，使对话更自然。
+
+使用前需要配置 OpenAI 兼容的 API。可以使用下方的环境变量，也可以在请求体中传入对应的 `openaiBaseUrl`、`openaiKey` 和 `openaiModel`：
+
+```bash
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_KEY=your_api_key
+MODEL_NAME=your_model_name
+```
+
+短文本可以使用 `/generate`。该接口返回 JSON，生成的音频和字幕地址分别位于 `data.audio` 和 `data.srt`：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tts/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "旁白：门缓缓打开。甲：我只是想说——乙：别说了，快跑！",
+    "voice": "zh-CN-XiaoxiaoNeural",
+    "useLLM": true,
+    "enableInterruptions": true
+  }'
+```
+
+长文本或需要直接保存音频时，使用 `/createStream`：
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tts/createStream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "旁白：门缓缓打开。甲：我只是想说——乙：别说了，快跑！",
+    "voice": "zh-CN-XiaoxiaoNeural",
+    "useLLM": true,
+    "enableInterruptions": true
+  }' \
+  -o timeline-mix.mp3
+```
+
+也可以在 AI 推荐请求的原文中手动标记抢话。标签应放在抢话者文本的开头：
+
+```text
+甲：我只是想说——
+[interrupt overlap=600 duck=-8]乙：别说了，快跑！
+```
+
+该标签可以和 Qwen 原生情感标签组合：
+
+```text
+[angry][interrupt overlap=500 duck=-14]别再说了！
+```
+
+`[angry]` 会保留并交给 Qwen 控制情绪；`[interrupt ...]` 会由 EasyVoice 转换为 Timeline Mix 参数，并在发送给语音引擎前从文本中删除。简写 `[interrupt]` 默认使用 600 毫秒重叠和 -8 dB 音量衰减。Timeline Mix 只会在抢话交界处保守裁剪超过约 80 毫秒的边缘静音，普通对话之间仍保留语音引擎原有的停顿；被打断者有 100 毫秒反应时间、220 毫秒平滑降音和最长 350 毫秒尾部淡出，抢话者使用 20 毫秒淡入。手动标签本身就是明确启用信号，因此即使没有另外设置 `enableInterruptions: true`，EasyVoice 也会自动启用 Timeline Mix。
+
+参数说明：
+
+- `useLLM: true`：让 AI 对原文分段并推荐角色、声音和语音参数。
+- `enableInterruptions: true`：允许 AI 为原文中明确存在的打断生成重叠时间线。只开启此参数而不启用 `useLLM` 不会生效。
+- `interrupt`、`overlapMs` 和 `duckPreviousDb` 由 AI 推荐流程或 EasyVoice 抢话标签生成，无需作为请求字段手动传入。其中重叠时间限制为 0–1000 毫秒，前一段的音量衰减限制为 -18–0 dB，第一段不能打断其他段落。
+- 如果原文没有明确的打断含义，音频仍按普通顺序拼接。设置 `enableInterruptions: false` 可以始终使用原有的顺序拼接行为。
+- `/createStream` 检测到有效抢话时会先完成 Timeline Mix，再以 MP3 返回；响应头 `x-generate-tts-type` 的值为 `buffered-timeline`，因此首个音频字节会比普通流式模式稍晚到达。
+
 ### 角色自定义
 
 启动服务后尝试在命令行运行下述命令：
@@ -266,8 +328,8 @@ Doubao 同时支持普通生成和单向 WebSocket 流式生成。长文本仍�
 REGISTER_DOUBAO_TTS=true
 DOUBAO_API_KEY=your-api-key
 DOUBAO_RESOURCE_ID=seed-tts-2.0
-DOUBAO_MODEL=seed-audio-1.0
-DOUBAO_VOICE=zh_female_tianmeitaozi_mars_bigtts
+DOUBAO_MODEL=seed-tts-2.0-standard
+DOUBAO_VOICE=zh_female_vv_uranus_bigtts
 ```
 
 - `DOUBAO_API_KEY` 和 `DOUBAO_RESOURCE_ID` 必填；API Key 只应保存在服务端环境中，不能提交到仓库或传给浏览器。
@@ -283,7 +345,7 @@ curl -X POST http://localhost:3000/api/v1/tts/createStream \
   -H "Content-Type: application/json" \
   -d '{
     "text": "这是一段使用豆包引擎生成的文本。",
-    "voice": "zh_female_tianmeitaozi_mars_bigtts",
+    "voice": "zh_female_vv_uranus_bigtts",
     "engine": "doubao-tts"
   }' \
   -o doubao.mp3
@@ -349,8 +411,8 @@ pnpm dev
 | `REGISTER_DOUBAO_TTS` | `false` | 启用 Doubao 普通及流式 TTS 引擎 |
 | `DOUBAO_API_KEY` | - | Doubao API Key（仅服务端使用） |
 | `DOUBAO_RESOURCE_ID` | - | Doubao 音频资源 ID |
-| `DOUBAO_MODEL` | `seed-audio-1.0` | Doubao 音频生成模型 |
-| `DOUBAO_VOICE` | `zh_female_tianmeitaozi_mars_bigtts` | 默认 Doubao Voice |
+| `DOUBAO_MODEL` | `seed-tts-2.0-standard` | Doubao 音频生成模型 |
+| `DOUBAO_VOICE` | `zh_female_vv_uranus_bigtts` | 默认 Doubao Voice |
 
 - **配置文件**：可在 `.env` 或 `packages/backend/.env` 中设置，优先级为 `packages/backend/.env > .env`。  
 - **Docker 配置**：通过 `-e` 参数传入环境变量，如上文示例。

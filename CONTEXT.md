@@ -12,6 +12,10 @@ _Avoid_: TTS service, TTS provider, speech service
 A concrete implementation of `TTSEngine` registered in the `TtsPluginManager`. Examples: EdgeTTS, OpenAI TTS, Kokoro, CosyVoice.
 _Avoid_: Driver, adapter, connector
 
+**Doubao TTS Engine**:
+A TTS Engine backed by Volcengine's Doubao speech synthesis models. It provides Doubao-specific Voices and synthesis behavior while presenting the same Engine Plugin boundary as other TTS Engines.
+_Avoid_: Volcengine provider, ByteDance adapter
+
 **Voice / Sound**:
 A named timbre or character available in a TTS engine (e.g., `zh-CN-YunxiNeural`, `alloy`). Voices are engine-specific; there is no cross-engine voice abstraction.
 _Avoid_: Speaker, persona, accent
@@ -33,7 +37,7 @@ Using an LLM to analyze text and automatically assign voices and parameters to s
 _Avoid_: AI配音, auto-dubbing, smart voice
 
 **Streaming**:
-Returning audio data progressively to the client as it is generated, rather than waiting for the full audio to complete.
+Returning audio data progressively to the client as it is generated, rather than waiting for the full audio to complete. An Engine Plugin may only use this term when its upstream protocol can provide progressive audio; a non-streaming upstream response is not treated as Streaming merely because it is wrapped in a Readable.
 _Avoid_: Progressive download, chunked response
 
 **Concat**:
